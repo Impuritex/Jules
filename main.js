@@ -2,6 +2,15 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const {
+  ALGORITHM,
+  PBKDF2_ITERATIONS,
+  KEY_LENGTH,
+  SALT_LENGTH,
+  IV_LENGTH,
+  AUTH_TAG_LENGTH,
+  deriveKey
+} = require('./cryptoUtils');
 
 const DATA_FILE = path.join(app.getPath('userData'), 'notes.enc');
 const AUTH_FILE = path.join(app.getPath('userData'), 'auth.enc');
@@ -9,18 +18,6 @@ const AUTH_FILE = path.join(app.getPath('userData'), 'auth.enc');
 let mainWindow;
 let sessionKey = null;
 let failedAttempts = 0;
-
-// Crypto Constants
-const ALGORITHM = 'aes-256-gcm';
-const PBKDF2_ITERATIONS = 100000;
-const KEY_LENGTH = 32;
-const SALT_LENGTH = 16;
-const IV_LENGTH = 16;
-const AUTH_TAG_LENGTH = 16;
-
-function deriveKey(password, salt) {
-  return crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha512');
-}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
