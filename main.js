@@ -20,46 +20,6 @@ const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const MAX_PASSWORD_LENGTH = 128;
 
-function checkIntegrity() {
-  const integrityFile = path.join(__dirname, 'integrity.json');
-  // If integrity file is missing, we assume a breach or fresh install without setup.
-  // For safety, we should fail, but for development convenience if file is missing...
-  // The requirement says "On startup, have the app calculate a hash... If a hacker has modified... refuse to run."
-  // So we should enforce it.
-  if (!fs.existsSync(integrityFile)) {
-    console.error('Integrity file missing!');
-    return false;
-  }
-
-  try {
-    const integrityData = JSON.parse(fs.readFileSync(integrityFile, 'utf8'));
-
-    // Check main.js
-    const mainContent = fs.readFileSync(__filename);
-    const mainHash = crypto.createHash('sha256').update(mainContent).digest('hex');
-
-    if (integrityData['main.js'] && integrityData['main.js'] !== mainHash) {
-      console.error('Integrity Check Failed: main.js has been modified!');
-      return false;
-    }
-
-    // Check package.json
-    const packagePath = path.join(__dirname, 'package.json');
-    if (fs.existsSync(packagePath)) {
-        const pkgContent = fs.readFileSync(packagePath);
-        const pkgHash = crypto.createHash('sha256').update(pkgContent).digest('hex');
-        if (integrityData['package.json'] && integrityData['package.json'] !== pkgHash) {
-             console.error('Integrity Check Failed: package.json has been modified!');
-             return false;
-        }
-    }
-    return true;
-  } catch (err) {
-    console.error('Integrity check error:', err);
-    return false;
-  }
-}
-
 function deriveKey(password, salt) {
   if (typeof password !== 'string') {
     throw new Error('Password must be a string');
@@ -107,12 +67,6 @@ function resetInactivityTimer() {
 }
 
 app.whenReady().then(() => {
-  if (!checkIntegrity()) {
-    dialog.showErrorBox('Security Alert', 'Integrity check failed. The application has been modified.');
-    app.quit();
-    return;
-  }
-
   createWindow();
   resetInactivityTimer();
 

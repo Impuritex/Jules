@@ -3,14 +3,9 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "generate-integrity": "node scripts/generate-integrity.js",
-    "prestart": "npm run generate-integrity",
     "start": "electron .",
-    "prebuild": "npm run generate-integrity",
     "build": "webpack --mode production",
-    "predev": "npm run generate-integrity",
     "dev": "webpack --mode development --watch",
-    "prepackage": "npm run generate-integrity",
     "package": "electron-packager ."
   },
   "keywords": [],
