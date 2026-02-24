@@ -17,8 +17,15 @@ const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
+const MAX_PASSWORD_LENGTH = 128;
 
 function deriveKey(password, salt) {
+  if (typeof password !== 'string') {
+    throw new Error('Password must be a string');
+  }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    throw new Error(`Password exceeds maximum length of ${MAX_PASSWORD_LENGTH} characters`);
+  }
   return crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha512');
 }
 
