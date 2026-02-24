@@ -37,20 +37,9 @@ function checkIntegrity() {
     const mainContent = fs.readFileSync(__filename);
     const mainHash = crypto.createHash('sha256').update(mainContent).digest('hex');
 
-    if (integrityData['main.js'] && integrityData['main.js'] !== mainHash) {
+    if (!integrityData['main.js'] || integrityData['main.js'] !== mainHash) {
       console.error('Integrity Check Failed: main.js has been modified!');
       return false;
-    }
-
-    // Check package.json
-    const packagePath = path.join(__dirname, 'package.json');
-    if (fs.existsSync(packagePath)) {
-        const pkgContent = fs.readFileSync(packagePath);
-        const pkgHash = crypto.createHash('sha256').update(pkgContent).digest('hex');
-        if (integrityData['package.json'] && integrityData['package.json'] !== pkgHash) {
-             console.error('Integrity Check Failed: package.json has been modified!');
-             return false;
-        }
     }
     return true;
   } catch (err) {

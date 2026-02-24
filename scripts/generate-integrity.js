@@ -3,8 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 
 const FILES_TO_CHECK = [
-  'main.js',
-  'package.json'
+  'main.js'
 ];
 
 function calculateHash(filePath) {
