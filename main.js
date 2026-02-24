@@ -35,9 +35,6 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
-  
-  // DevTools for debugging
-  // mainWindow.webContents.openDevTools(); 
 }
 
 let inactivityTimer;
