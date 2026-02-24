@@ -8,6 +8,7 @@ const AUTH_FILE = path.join(app.getPath('userData'), 'auth.enc');
 
 let mainWindow;
 let sessionKey = null;
+let isDuressSession = false;
 let failedAttempts = 0;
 
 // Crypto Constants
@@ -18,6 +19,46 @@ const SALT_LENGTH = 16;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 
+function checkIntegrity() {
+  const integrityFile = path.join(__dirname, 'integrity.json');
+  // If integrity file is missing, we assume a breach or fresh install without setup.
+  // For safety, we should fail, but for development convenience if file is missing...
+  // The requirement says "On startup, have the app calculate a hash... If a hacker has modified... refuse to run."
+  // So we should enforce it.
+  if (!fs.existsSync(integrityFile)) {
+    console.error('Integrity file missing!');
+    return false;
+  }
+
+  try {
+    const integrityData = JSON.parse(fs.readFileSync(integrityFile, 'utf8'));
+
+    // Check main.js
+    const mainContent = fs.readFileSync(__filename);
+    const mainHash = crypto.createHash('sha256').update(mainContent).digest('hex');
+
+    if (integrityData['main.js'] && integrityData['main.js'] !== mainHash) {
+      console.error('Integrity Check Failed: main.js has been modified!');
+      return false;
+    }
+
+    // Check package.json
+    const packagePath = path.join(__dirname, 'package.json');
+    if (fs.existsSync(packagePath)) {
+        const pkgContent = fs.readFileSync(packagePath);
+        const pkgHash = crypto.createHash('sha256').update(pkgContent).digest('hex');
+        if (integrityData['package.json'] && integrityData['package.json'] !== pkgHash) {
+             console.error('Integrity Check Failed: package.json has been modified!');
+             return false;
+        }
+    }
+    return true;
+  } catch (err) {
+    console.error('Integrity check error:', err);
+    return false;
+  }
+}
+
 function deriveKey(password, salt) {
   return crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha512');
 }
@@ -26,12 +67,22 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: 800,
+    minHeight: 600,
     backgroundColor: '#1a1a1a',
     webPreferences: {
       preload: path.join(__dirname, 'src', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  mainWindow.on('blur', () => {
+    mainWindow.webContents.send('blur-app');
+  });
+
+  mainWindow.on('focus', () => {
+    mainWindow.webContents.send('focus-app');
   });
 
   mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
@@ -52,6 +103,12 @@ function resetInactivityTimer() {
 }
 
 app.whenReady().then(() => {
+  if (!checkIntegrity()) {
+    dialog.showErrorBox('Security Alert', 'Integrity check failed. The application has been modified.');
+    app.quit();
+    return;
+  }
+
   createWindow();
   resetInactivityTimer();
 
@@ -122,7 +179,7 @@ ipcMain.handle('check-account-exists', () => {
   return fs.existsSync(AUTH_FILE);
 });
 
-ipcMain.handle('create-account', async (event, password) => {
+ipcMain.handle('create-account', async (event, password, duressPassword) => {
   try {
     const salt = crypto.randomBytes(SALT_LENGTH);
     const key = deriveKey(password, salt);
@@ -134,11 +191,30 @@ ipcMain.handle('create-account', async (event, password) => {
     encrypted += cipher.final('hex');
     const authTag = cipher.getAuthTag();
 
+    let duressAuth = null;
+    if (duressPassword) {
+        const dSalt = crypto.randomBytes(SALT_LENGTH);
+        const dKey = deriveKey(duressPassword, dSalt);
+        const dIv = crypto.randomBytes(IV_LENGTH);
+        const dCipher = crypto.createCipheriv(ALGORITHM, dKey, dIv);
+        let dEncrypted = dCipher.update('DURESS_VALID', 'utf8', 'hex');
+        dEncrypted += dCipher.final('hex');
+        const dAuthTag = dCipher.getAuthTag();
+
+        duressAuth = {
+            salt: dSalt.toString('hex'),
+            iv: dIv.toString('hex'),
+            encrypted: dEncrypted,
+            authTag: dAuthTag.toString('hex')
+        };
+    }
+
     const authData = JSON.stringify({
       salt: salt.toString('hex'),
       iv: iv.toString('hex'),
       encrypted: encrypted,
-      authTag: authTag.toString('hex')
+      authTag: authTag.toString('hex'),
+      duress: duressAuth
     });
 
     fs.writeFileSync(AUTH_FILE, authData);
@@ -170,19 +246,48 @@ ipcMain.handle('login', async (event, password) => {
 
   try {
     const authData = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
-    const salt = Buffer.from(authData.salt, 'hex');
-    const key = deriveKey(password, salt);
     
-    const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(authData.iv, 'hex'));
-    decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
-    let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
+    // 1. Try Main Password
+    try {
+        const salt = Buffer.from(authData.salt, 'hex');
+        const key = deriveKey(password, salt);
 
-    if (decrypted === 'VALID') {
-      sessionKey = key;
-      failedAttempts = 0;
-      return { success: true };
+        const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(authData.iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
+        let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+
+        if (decrypted === 'VALID') {
+          sessionKey = key;
+          failedAttempts = 0;
+          isDuressSession = false;
+          return { success: true };
+        }
+    } catch (mainErr) {
+        // Main password failed, check duress below
     }
+
+    // 2. Try Duress Password
+    if (authData.duress) {
+        try {
+            const dSalt = Buffer.from(authData.duress.salt, 'hex');
+            const dKey = deriveKey(password, dSalt);
+            const dDecipher = crypto.createDecipheriv(ALGORITHM, dKey, Buffer.from(authData.duress.iv, 'hex'));
+            dDecipher.setAuthTag(Buffer.from(authData.duress.authTag, 'hex'));
+            let dDecrypted = dDecipher.update(authData.duress.encrypted, 'hex', 'utf8');
+            dDecrypted += dDecipher.final('utf8');
+
+            if (dDecrypted === 'DURESS_VALID') {
+                sessionKey = dKey; // Set session key to prevent "Not authenticated" error
+                failedAttempts = 0;
+                isDuressSession = true;
+                return { success: true };
+            }
+        } catch (duressErr) {
+            // Duress failed
+        }
+    }
+
   } catch (err) {
     console.error('Login failed (crypto error or wrong password)', err.message);
   }
@@ -202,6 +307,15 @@ ipcMain.handle('login', async (event, password) => {
 
 ipcMain.handle('load-notes', async () => {
   if (!sessionKey) throw new Error('Not authenticated');
+
+  if (isDuressSession) {
+      return [
+          { id: 'fake1', title: 'Grocery List', content: 'Milk, Eggs, Bread, Butter', updatedAt: new Date().toISOString() },
+          { id: 'fake2', title: 'Meeting Notes', content: 'Discussed project timeline. Everything is on track.', updatedAt: new Date().toISOString() },
+          { id: 'fake3', title: 'Vacation Ideas', content: 'Hawaii or Bahamas? Maybe a cruise.', updatedAt: new Date().toISOString() }
+      ];
+  }
+
   if (!fs.existsSync(DATA_FILE)) return []; 
 
   try {
