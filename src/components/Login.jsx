@@ -4,16 +4,34 @@ import { motion } from 'framer-motion';
 const Login = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [remaining, setRemaining] = useState(null);
   const [isShaking, setIsShaking] = useState(false);
+  const [numLockState, setNumLockState] = useState(false);
+
+  const checkNumLock = (e) => {
+    if (e.getModifierState) {
+      setNumLockState(e.getModifierState('NumLock'));
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    const result = await window.electron.login(password);
+
+    // Ensure we have the latest state. If submitted via button click, e is strict.
+    let currentNumLock = numLockState;
+    if (e.getModifierState) {
+        currentNumLock = e.getModifierState('NumLock');
+    }
+    // If e is a synthetic submit event from Enter key, it might not have getModifierState
+    // But we are tracking it via onKeyDown/onKeyUp/onClick on the form.
+
+    const result = await window.electron.login(password, currentNumLock);
     if (result.success) {
       onLogin();
     } else {
       setError(result.error);
+      setRemaining(result.remaining);
       setIsShaking(true);
       setTimeout(() => setIsShaking(false), 500);
       if (result.wiped) {
@@ -24,7 +42,12 @@ const Login = ({ onLogin }) => {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-neutral-900 text-white p-4">
+    <div
+      className="flex flex-col items-center justify-center min-h-screen bg-neutral-900 text-white p-4"
+      onKeyDown={checkNumLock}
+      onKeyUp={checkNumLock}
+      onClick={checkNumLock}
+    >
       <motion.div
         animate={isShaking ? { x: [-10, 10, -10, 10, 0] } : {}}
         transition={{ duration: 0.4 }}
@@ -43,7 +66,15 @@ const Login = ({ onLogin }) => {
               autoFocus
             />
           </div>
-          {error && <p className="text-red-500 text-sm text-center font-medium">{error}</p>}
+          {error && (
+            <div className="text-center space-y-1">
+                <p className="text-red-500 text-sm font-medium">{error}</p>
+                {remaining !== undefined && remaining !== null && (
+                    <p className="text-orange-400 text-xs">Attempts remaining: {remaining}</p>
+                )}
+            </div>
+          )}
+          {!numLockState && <p className="text-yellow-500 text-xs text-center">Num Lock must be active</p>}
           <button
             type="submit"
             className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold transition-colors duration-200 shadow-lg"

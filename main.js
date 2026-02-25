@@ -81,7 +81,64 @@ app.on('window-all-closed', () => {
 
 // --- Security / Data Logic ---
 
-function wipeData() {
+function createAccountInternal(password, duressPassword = null) {
+  const salt = crypto.randomBytes(SALT_LENGTH);
+  const key = deriveKey(password, salt);
+
+  // Verification Hash
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  let encrypted = cipher.update('VALID', 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag();
+
+  let duressAuth = null;
+  if (duressPassword) {
+      const dSalt = crypto.randomBytes(SALT_LENGTH);
+      const dKey = deriveKey(duressPassword, dSalt);
+      const dIv = crypto.randomBytes(IV_LENGTH);
+      const dCipher = crypto.createCipheriv(ALGORITHM, dKey, dIv);
+      let dEncrypted = dCipher.update('DURESS_VALID', 'utf8', 'hex');
+      dEncrypted += dCipher.final('hex');
+      const dAuthTag = dCipher.getAuthTag();
+
+      duressAuth = {
+          salt: dSalt.toString('hex'),
+          iv: dIv.toString('hex'),
+          encrypted: dEncrypted,
+          authTag: dAuthTag.toString('hex')
+      };
+  }
+
+  const authData = JSON.stringify({
+    salt: salt.toString('hex'),
+    iv: iv.toString('hex'),
+    encrypted: encrypted,
+    authTag: authTag.toString('hex'),
+    duress: duressAuth
+  });
+
+  fs.writeFileSync(AUTH_FILE, authData);
+  return key;
+}
+
+function saveNotesInternal(notes, key) {
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+    let encrypted = cipher.update(JSON.stringify(notes), 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag();
+
+    const data = JSON.stringify({
+      iv: iv.toString('hex'),
+      encrypted: encrypted,
+      authTag: authTag.toString('hex')
+    });
+
+    fs.writeFileSync(DATA_FILE, data);
+}
+
+function wipeData(newPassword = null) {
   console.log('WIPING ALL DATA due to security breach/failure.');
   const wipeFile = (file) => {
     if (fs.existsSync(file)) {
@@ -95,42 +152,29 @@ function wipeData() {
   wipeFile(DATA_FILE);
   wipeFile(AUTH_FILE);
   
-  // Fill with fake realistic junk as requested
-  // "Everything is wiped and filled with 'fake' realistic looking junk."
-  // I'll write a new DATA_FILE with junk.
-  const fakeJunk = `
-    Note 1: Shopping List
-    - Milk
-    - Eggs
-    - Bread
-    
-    Note 2: Meeting Notes
-    Discussed Q3 goals. Need to improve performance by 10%.
-    Action items:
-    1. Review code
-    2. Update dependencies
-    
-    Note 3: Ideas
-    - App that tracks water intake
-    - Game about a cat in space
-  `; 
-  // It should be encrypted junk or plain junk? "Filled with... junk". 
-  // If I write plain text, the app will try to decrypt it and fail, triggering another wipe.
-  // Maybe I should just write junk bytes. "Fake realistic looking junk" implies if someone opens the file in a text editor they see junk?
-  // Or if they open the app they see fake notes?
-  // "Once a wrong password is typed 2 times everything is wiped and filled with 'fake' realistic looking junk."
-  // This likely means the app should load and show fake notes.
-  // To do this, I need to create a valid encrypted file with a known key (or just no encryption) that contains fake notes?
-  // But the user just failed the password. So they can't log in.
-  // So the next time they open the app? They will need to create a new account?
-  // Or maybe the file on disk is replaced by a file containing junk text (which looks like an encrypted file but isn't).
-  // "filled with 'fake' realistic looking junk" -> probably means the file content itself becomes junk.
-  
-  // I'll just write random bytes that look like encrypted data but are garbage.
-  fs.writeFileSync(DATA_FILE, crypto.randomBytes(1024));
+  if (newPassword) {
+      // Honeypot Mode: Re-initialize with the WRONG password and fake notes
+      const key = createAccountInternal(newPassword);
+      const fakeNotes = [
+          { id: 'fake1', title: 'Shopping List', content: 'Milk, Eggs, Bread', updatedAt: new Date().toISOString() },
+          { id: 'fake2', title: 'Meeting Notes', content: 'Discussed Q3 goals. Need to improve performance by 10%.', updatedAt: new Date().toISOString() },
+          { id: 'fake3', title: 'Ideas', content: 'App that tracks water intake. Game about a cat in space.', updatedAt: new Date().toISOString() }
+      ];
+      saveNotesInternal(fakeNotes, key);
 
-  sessionKey = null;
-  if (mainWindow) mainWindow.webContents.send('wiped');
+      // Do NOT send wiped event. Let the user think they just failed the password.
+      sessionKey = null;
+  } else {
+      // Just create garbage file to simulate encrypted data?
+      // Or just leave it wiped (deleted).
+      // Prompt says "filled with 'fake' realistic looking junk".
+      // If no password provided (e.g. duress wipe?), we can't encrypt valid junk.
+      // So just random bytes.
+      fs.writeFileSync(DATA_FILE, crypto.randomBytes(1024));
+
+      sessionKey = null;
+      if (mainWindow) mainWindow.webContents.send('wiped');
+  }
 }
 
 ipcMain.handle('check-account-exists', () => {
@@ -139,57 +183,10 @@ ipcMain.handle('check-account-exists', () => {
 
 ipcMain.handle('create-account', async (event, password, duressPassword) => {
   try {
-    const salt = crypto.randomBytes(SALT_LENGTH);
-    const key = deriveKey(password, salt);
-    
-    // Verification Hash
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-    let encrypted = cipher.update('VALID', 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag();
-
-    let duressAuth = null;
-    if (duressPassword) {
-        const dSalt = crypto.randomBytes(SALT_LENGTH);
-        const dKey = deriveKey(duressPassword, dSalt);
-        const dIv = crypto.randomBytes(IV_LENGTH);
-        const dCipher = crypto.createCipheriv(ALGORITHM, dKey, dIv);
-        let dEncrypted = dCipher.update('DURESS_VALID', 'utf8', 'hex');
-        dEncrypted += dCipher.final('hex');
-        const dAuthTag = dCipher.getAuthTag();
-
-        duressAuth = {
-            salt: dSalt.toString('hex'),
-            iv: dIv.toString('hex'),
-            encrypted: dEncrypted,
-            authTag: dAuthTag.toString('hex')
-        };
-    }
-
-    const authData = JSON.stringify({
-      salt: salt.toString('hex'),
-      iv: iv.toString('hex'),
-      encrypted: encrypted,
-      authTag: authTag.toString('hex'),
-      duress: duressAuth
-    });
-
-    fs.writeFileSync(AUTH_FILE, authData);
+    const key = createAccountInternal(password, duressPassword);
     
     // Create empty notes file
-    const notesIv = crypto.randomBytes(IV_LENGTH);
-    const notesCipher = crypto.createCipheriv(ALGORITHM, key, notesIv);
-    let notesEnc = notesCipher.update(JSON.stringify([]), 'utf8', 'hex');
-    notesEnc += notesCipher.final('hex');
-    const notesAuthTag = notesCipher.getAuthTag();
-    
-    const notesData = JSON.stringify({
-      iv: notesIv.toString('hex'),
-      encrypted: notesEnc,
-      authTag: notesAuthTag.toString('hex')
-    });
-    fs.writeFileSync(DATA_FILE, notesData);
+    saveNotesInternal([], key);
 
     sessionKey = key;
     return { success: true };
@@ -199,68 +196,92 @@ ipcMain.handle('create-account', async (event, password, duressPassword) => {
   }
 });
 
-ipcMain.handle('login', async (event, password) => {
+ipcMain.handle('login', async (event, password, isNumLockActive) => {
   if (!fs.existsSync(AUTH_FILE)) return { success: false, error: 'No account found' };
 
-  try {
-    const authData = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
-    
-    // 1. Try Main Password
-    try {
-        const salt = Buffer.from(authData.salt, 'hex');
-        const key = deriveKey(password, salt);
+  let success = false;
+  let isMain = false;
+  let isDuress = false;
+  let key = null;
 
-        const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(authData.iv, 'hex'));
-        decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
-        let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
+  // Num Lock Check
+  if (isNumLockActive !== false) { // Assuming undefined/null means check skipped or not provided (backward compat? No, force it)
+       // Actually, from requirements: "during password entry num lock must be active. otherwise even if the password is correct it will show up as incorrect."
+       // So if isNumLockActive is false, we force failure.
+  }
 
-        if (decrypted === 'VALID') {
-          sessionKey = key;
-          failedAttempts = 0;
-          isDuressSession = false;
-          return { success: true };
-        }
-    } catch (mainErr) {
-        // Main password failed, check duress below
-    }
+  // We'll proceed to check password anyway to distinguish between "Wrong Password" and "NumLock missing" logic internally if needed,
+  // but strictly we should just treat it as wrong password.
+  // However, we need to know IF the password WAS correct to know if we should increment failed attempts?
+  // "otherwise even if the password is correct it will show up as incorrect."
+  // This implies it counts as a failed attempt.
 
-    // 2. Try Duress Password
-    if (authData.duress) {
+  if (isNumLockActive) {
+      try {
+        const authData = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+
+        // 1. Try Main Password
         try {
-            const dSalt = Buffer.from(authData.duress.salt, 'hex');
-            const dKey = deriveKey(password, dSalt);
-            const dDecipher = crypto.createDecipheriv(ALGORITHM, dKey, Buffer.from(authData.duress.iv, 'hex'));
-            dDecipher.setAuthTag(Buffer.from(authData.duress.authTag, 'hex'));
-            let dDecrypted = dDecipher.update(authData.duress.encrypted, 'hex', 'utf8');
-            dDecrypted += dDecipher.final('utf8');
+            const salt = Buffer.from(authData.salt, 'hex');
+            const derivedKey = deriveKey(password, salt);
 
-            if (dDecrypted === 'DURESS_VALID') {
-                sessionKey = dKey; // Set session key to prevent "Not authenticated" error
-                failedAttempts = 0;
-                isDuressSession = true;
-                return { success: true };
+            const decipher = crypto.createDecipheriv(ALGORITHM, derivedKey, Buffer.from(authData.iv, 'hex'));
+            decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
+            let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
+            decrypted += decipher.final('utf8');
+
+            if (decrypted === 'VALID') {
+              key = derivedKey;
+              isMain = true;
+              success = true;
             }
-        } catch (duressErr) {
-            // Duress failed
+        } catch (mainErr) {
+            // Main password failed
         }
-    }
 
-  } catch (err) {
-    console.error('Login failed (crypto error or wrong password)', err.message);
+        // 2. Try Duress Password
+        if (!success && authData.duress) {
+            try {
+                const dSalt = Buffer.from(authData.duress.salt, 'hex');
+                const dKey = deriveKey(password, dSalt);
+                const dDecipher = crypto.createDecipheriv(ALGORITHM, dKey, Buffer.from(authData.duress.iv, 'hex'));
+                dDecipher.setAuthTag(Buffer.from(authData.duress.authTag, 'hex'));
+                let dDecrypted = dDecipher.update(authData.duress.encrypted, 'hex', 'utf8');
+                dDecrypted += dDecipher.final('utf8');
+
+                if (dDecrypted === 'DURESS_VALID') {
+                    key = dKey;
+                    isDuress = true;
+                    success = true;
+                }
+            } catch (duressErr) {
+                // Duress failed
+            }
+        }
+
+      } catch (err) {
+        console.error('Login failed (crypto error or wrong password)', err.message);
+      }
+  }
+
+  if (success) {
+      sessionKey = key;
+      failedAttempts = 0;
+      isDuressSession = isDuress;
+      return { success: true };
   }
 
   failedAttempts++;
   console.log(`Failed attempt ${failedAttempts}/2`);
 
   if (failedAttempts >= 2) {
-    wipeData();
-    return { success: false, error: 'Security Breach Detected. Data Wiped.', wiped: true };
+    // Honeypot time: Wipe and replace with junk encrypted by THIS wrong password
+    wipeData(password);
+    // Return standard error to mock 3 attempts (user thinks 1 remaining)
+    return { success: false, error: 'Invalid password', remaining: 1 };
   }
   
-  // Return fake remaining count (display 3)
-  // If 1 fail: real remaining 1, display 2.
-  return { success: false, error: 'Invalid password', remaining: 3 - failedAttempts };
+  return { success: false, error: 'Invalid password', remaining: 3 - failedAttempts }; // Display 3, real limit 2
 });
 
 ipcMain.handle('load-notes', async () => {
@@ -290,7 +311,29 @@ ipcMain.handle('load-notes', async () => {
     let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     
-    return JSON.parse(decrypted);
+    let notes = JSON.parse(decrypted);
+
+    // Auto-Disintegrate Logic
+    const now = Date.now();
+    let modified = false;
+    const initialCount = notes.length;
+
+    notes = notes.filter(note => {
+        if (note.security && note.security.autoWipeDate) {
+            const expiry = new Date(note.security.autoWipeDate).getTime();
+            if (now > expiry) {
+                return false; // Wipe
+            }
+        }
+        return true;
+    });
+
+    if (notes.length !== initialCount) {
+        console.log(`Auto-disintegrated ${initialCount - notes.length} notes.`);
+        saveNotesInternal(notes, sessionKey);
+    }
+
+    return notes;
   } catch (err) {
     console.error('Load notes failed', err);
     wipeData();
@@ -302,19 +345,7 @@ ipcMain.handle('save-notes', async (event, notes) => {
   if (!sessionKey) throw new Error('Not authenticated');
   
   try {
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv(ALGORITHM, sessionKey, iv);
-    let encrypted = cipher.update(JSON.stringify(notes), 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag();
-
-    const data = JSON.stringify({
-      iv: iv.toString('hex'),
-      encrypted: encrypted,
-      authTag: authTag.toString('hex')
-    });
-    
-    fs.writeFileSync(DATA_FILE, data);
+    saveNotesInternal(notes, sessionKey);
     return { success: true };
   } catch (err) {
     console.error(err);
@@ -330,8 +361,65 @@ ipcMain.handle('wipe-data', () => {
     wipeData();
 });
 
-ipcMain.handle('export-note', async (event, { note, password }) => {
+ipcMain.handle('verify-note-password', async (event, noteId, password) => {
+    if (!sessionKey) throw new Error('Not authenticated');
+
+    // We need to find the note. Since we don't store note passwords separately in backend,
+    // we load the notes and check.
+    // This assumes the frontend sends the password to verify against what we have in the DB.
+    try {
+        const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
+        const data = JSON.parse(fileContent);
+        const decipher = crypto.createDecipheriv(ALGORITHM, sessionKey, Buffer.from(data.iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(data.authTag, 'hex'));
+        let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        const notes = JSON.parse(decrypted);
+
+        const note = notes.find(n => n.id === noteId);
+        if (!note || !note.security || !note.security.password) {
+             // If note has no password, verification is moot, but let's say success
+             return { success: true };
+        }
+
+        // Check password
+        // Since the database itself is encrypted, we store the note password in the security object.
+        // We compare directly.
+        if (note.security.password === password) {
+            return { success: true };
+        } else {
+             // Wipe everything on wrong note password
+             wipeData();
+             return { success: false, wiped: true };
+        }
+    } catch (err) {
+        console.error('Verify note password failed', err);
+        // If decryption fails here, it's weird, but we should probably wipe.
+        wipeData();
+        return { success: false, wiped: true };
+    }
+});
+
+ipcMain.handle('export-note', async (event, { noteId, password }) => {
+   if (!sessionKey) throw new Error('Not authenticated');
+
    try {
+     // Fetch fresh note data to ensure security flags are respected
+     const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
+     const data = JSON.parse(fileContent);
+     const decipher = crypto.createDecipheriv(ALGORITHM, sessionKey, Buffer.from(data.iv, 'hex'));
+     decipher.setAuthTag(Buffer.from(data.authTag, 'hex'));
+     let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
+     decrypted += decipher.final('utf8');
+     const notes = JSON.parse(decrypted);
+
+     const note = notes.find(n => n.id === noteId);
+     if (!note) throw new Error('Note not found');
+
+     if (note.security && note.security.exportable === false) {
+         throw new Error('This note is not allowed to be exported.');
+     }
+
      const { filePath } = await dialog.showSaveDialog(mainWindow, {
         title: 'Export Note',
         defaultPath: `note-${Date.now()}.safe`,
@@ -378,7 +466,6 @@ ipcMain.handle('import-note', async (event, password) => {
             try {
                 data = JSON.parse(fileContent);
             } catch (e) {
-                // If not JSON, it's garbage or corrupted
                  throw new Error('File corrupted');
             }
             
@@ -393,12 +480,11 @@ ipcMain.handle('import-note', async (event, password) => {
             return { success: true, note: JSON.parse(decrypted) };
         } catch (err) {
             console.error('Import failed', err);
-            // "If wrong password even once its wiped" -> Wipe the FILE
             try {
                 const stat = fs.statSync(filePath);
                 const garbage = crypto.randomBytes(stat.size);
                 fs.writeFileSync(filePath, garbage);
-                fs.unlinkSync(filePath); // Or just leave it as garbage? "Wiped" implies deleted or overwritten.
+                fs.unlinkSync(filePath);
             } catch (cleanupErr) {
                 console.error('Failed to wipe file', cleanupErr);
             }
