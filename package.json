@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "npm run build && electron .",
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
     "package": "electron-packager ."
