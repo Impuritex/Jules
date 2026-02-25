@@ -45,7 +45,7 @@ const App = () => {
   }
 
   return (
-    <div className="bg-neutral-900 min-h-screen text-white relative overflow-hidden">
+    <div className="bg-gradient-to-br from-gray-900 via-neutral-900 to-black min-h-screen text-white relative overflow-hidden">
       <AnimatePresence mode="wait">
         {showOverlay && (
           <motion.div

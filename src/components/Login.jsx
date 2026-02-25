@@ -18,13 +18,10 @@ const Login = ({ onLogin }) => {
     e.preventDefault();
     setError('');
 
-    // Ensure we have the latest state. If submitted via button click, e is strict.
     let currentNumLock = numLockState;
     if (e.getModifierState) {
         currentNumLock = e.getModifierState('NumLock');
     }
-    // If e is a synthetic submit event from Enter key, it might not have getModifierState
-    // But we are tracking it via onKeyDown/onKeyUp/onClick on the form.
 
     const result = await window.electron.login(password, currentNumLock);
     if (result.success) {
@@ -43,7 +40,7 @@ const Login = ({ onLogin }) => {
 
   return (
     <div
-      className="flex flex-col items-center justify-center min-h-screen bg-neutral-900 text-white p-4"
+      className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-gray-900 via-neutral-900 to-black text-white p-4"
       onKeyDown={checkNumLock}
       onKeyUp={checkNumLock}
       onClick={checkNumLock}
@@ -51,17 +48,17 @@ const Login = ({ onLogin }) => {
       <motion.div
         animate={isShaking ? { x: [-10, 10, -10, 10, 0] } : {}}
         transition={{ duration: 0.4 }}
-        className="w-full max-w-md p-8 bg-neutral-800 rounded-xl shadow-2xl border border-neutral-700"
+        className="w-full max-w-md p-8 bg-black/40 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10"
       >
-        <h2 className="text-3xl font-bold mb-6 text-center text-indigo-400">Secure Notes</h2>
+        <h2 className="text-3xl font-bold mb-6 text-center text-white/90 drop-shadow-md">Secure Notes</h2>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-2">Password</label>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 bg-neutral-900 border border-neutral-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all duration-200"
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 focus:outline-none transition-all duration-200 text-white placeholder-gray-500 backdrop-blur-sm"
               placeholder="Enter your password"
               autoFocus
             />
@@ -74,10 +71,10 @@ const Login = ({ onLogin }) => {
                 )}
             </div>
           )}
-          {!numLockState && <p className="text-yellow-500 text-xs text-center">Num Lock must be active</p>}
+          {/* Hidden NumLock check */}
           <button
             type="submit"
-            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold transition-colors duration-200 shadow-lg"
+            className="w-full py-3 bg-indigo-600/80 hover:bg-indigo-700/80 rounded-lg font-semibold transition-colors duration-200 shadow-lg border border-indigo-500/30 backdrop-blur-sm"
           >
             Unlock
           </button>

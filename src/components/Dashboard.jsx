@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { format } from 'date-fns';
+import { format, addHours, differenceInHours } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FaPlus, FaTrash, FaSignOutAlt, FaSave, FaCopy, FaBell, FaLock, FaCog, FaImage, FaCheck, FaTimes, FaFileExport } from 'react-icons/fa';
+import { FaPlus, FaTrash, FaSignOutAlt, FaSave, FaCopy, FaBell, FaLock, FaCog, FaImage, FaCheck, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
 
 const Dashboard = ({ onLogout }) => {
   const [notes, setNotes] = useState([]);
@@ -15,14 +15,14 @@ const Dashboard = ({ onLogout }) => {
   const [settingsNoteId, setSettingsNoteId] = useState(null);
   const [notePassword, setNotePassword] = useState('');
   const [exportable, setExportable] = useState(true);
-  const [autoWipeDate, setAutoWipeDate] = useState('');
+  const [validityDuration, setValidityDuration] = useState(''); // Hours
   const [accessTimerLimit, setAccessTimerLimit] = useState(15);
 
   // Unlock State
   const [unlockNoteId, setUnlockNoteId] = useState(null);
   const [unlockPassword, setUnlockPassword] = useState('');
   const [unlockTimeLeft, setUnlockTimeLeft] = useState(null);
-  const [unlockedNotes, setUnlockedNotes] = useState(new Set()); // Keep track of unlocked notes in session
+  const [unlockedNotes, setUnlockedNotes] = useState(new Set());
 
   const unlockTimerRef = useRef(null);
   const scheduledReminders = useRef(new Set());
@@ -34,7 +34,6 @@ const Dashboard = ({ onLogout }) => {
     }
   }, []);
 
-  // Cleanup timers
   useEffect(() => {
       return () => {
           if (unlockTimerRef.current) clearInterval(unlockTimerRef.current);
@@ -44,7 +43,6 @@ const Dashboard = ({ onLogout }) => {
   const loadNotes = async () => {
     try {
       const loadedNotes = await window.electron.loadNotes();
-      // Ensure content is array format for rich text
       const processedNotes = (loadedNotes || []).map(note => {
           if (typeof note.content === 'string') {
               return { ...note, content: [{ id: uuidv4(), type: 'text', data: note.content }] };
@@ -61,7 +59,6 @@ const Dashboard = ({ onLogout }) => {
     setIsSaving(true);
     setStatusMessage('Saving...');
     try {
-      // Convert back to simple structure if needed? No, keep rich structure.
       await window.electron.saveNotes(updatedNotes);
       setStatusMessage('Saved');
       setTimeout(() => setStatusMessage(''), 2000);
@@ -82,19 +79,17 @@ const Dashboard = ({ onLogout }) => {
       updatedAt: new Date().toISOString(),
       security: {
           exportable: true,
-          accessTimer: 15 // Default
+          accessTimer: 15
       }
     };
     const updatedNotes = [newNote, ...notes];
     setNotes(updatedNotes);
-    // Don't auto-select if previous note was locked? No, just select.
     handleSelectNote(newNote.id);
     saveNotesToDisk(updatedNotes);
   };
 
   const handleDeleteNote = (e, id) => {
     if (e) e.stopPropagation();
-    // Verify if we can just delete it without password? Yes, user can delete note.
     if (window.confirm('Are you sure you want to delete this note?')) {
       deleteNote(id);
     }
@@ -137,10 +132,6 @@ const Dashboard = ({ onLogout }) => {
   };
 
   const handleAddImageBlock = async () => {
-      // Prompt for image URL or file?
-      // Since we can't easily open file dialog from renderer without IPC, let's use a hidden file input or just paste.
-      // For now, let's just add a placeholder text block saying "Paste image here".
-      // Or better: Use clipboard read?
       try {
           const clipboardItems = await navigator.clipboard.read();
           for (const item of clipboardItems) {
@@ -181,17 +172,14 @@ const Dashboard = ({ onLogout }) => {
       if (!note) return;
 
       if (note.security && note.security.password && !unlockedNotes.has(id)) {
-          // Locked
           setUnlockNoteId(id);
           setUnlockPassword('');
           setUnlockTimeLeft(note.security.accessTimer || 15);
-          // Start timer
           if (unlockTimerRef.current) clearInterval(unlockTimerRef.current);
           unlockTimerRef.current = setInterval(() => {
               setUnlockTimeLeft(prev => {
                   if (prev <= 1) {
                       clearInterval(unlockTimerRef.current);
-                      // Time's up! Wipe note.
                       deleteNote(id);
                       setUnlockNoteId(null);
                       alert('Access time expired. Note wiped.');
@@ -201,7 +189,6 @@ const Dashboard = ({ onLogout }) => {
               });
           }, 1000);
       } else {
-          // Unlocked or no password
           setSelectedNoteId(id);
           setUnlockNoteId(null);
           if (unlockTimerRef.current) clearInterval(unlockTimerRef.current);
@@ -218,7 +205,6 @@ const Dashboard = ({ onLogout }) => {
               setSelectedNoteId(unlockNoteId);
               setUnlockNoteId(null);
           } else {
-              // Failed. Backend wipes everything.
               alert('Incorrect password. Security breach protocol initiated.');
               window.location.reload();
           }
@@ -233,83 +219,24 @@ const Dashboard = ({ onLogout }) => {
       if (!note) return;
       setSettingsNoteId(selectedNoteId);
       setExportable(note.security?.exportable ?? true);
-      setAutoWipeDate(note.security?.autoWipeDate ? format(new Date(note.security.autoWipeDate), "yyyy-MM-dd'T'HH:mm") : '');
+      setValidityDuration(note.security?.validityDuration || '');
       setAccessTimerLimit(note.security?.accessTimer || 15);
-      setNotePassword(''); // Don't show existing hash
+      setNotePassword('');
       setIsSettingsOpen(true);
   };
 
   const handleSaveSettings = async () => {
-      // Calculate hash if password set
-      // Since we don't have crypto here, we can use simple SHA-256 or send to backend to hash?
-      // Or just store plain text? NO.
-      // Use Web Crypto API.
-      let passwordHash = undefined;
-      let salt = undefined;
-
-      if (notePassword) {
-          const msgBuffer = new TextEncoder().encode(notePassword);
-          const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-          const hashArray = Array.from(new Uint8Array(hashBuffer));
-          const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-          // Actually, let's use a simpler approach: Just store the password plainly in the note object?
-          // The note object itself is encrypted in DATA_FILE.
-          // If we store plain password in `security.password`, backend can verify it.
-          // BUT if we export the note (even if not exportable), it's risky?
-          // Backend handles verification using PBKDF2.
-          // Let's rely on backend verification logic which expects `passwordHash`.
-          // The backend verification I wrote uses `pbkdf2Sync` to verify against `passwordHash` using `salt`.
-          // So I need to generate salt and hash here using PBKDF2? That's hard in browser without library.
-          // Workaround: Send `set-note-password` IPC?
-          // Or just use Web Crypto PBKDF2.
-          // For simplicity given the constraints: I'll use a simple SHA-256 hash here and update backend verification to match.
-          // BACKEND currently expects: `derivedHash === note.security.passwordHash`.
-          // And it uses PBKDF2.
-          // I should change backend to use simple comparison or implement PBKDF2 here.
-          // Implementing PBKDF2 in WebCrypto is verbose.
-          // I'll stick to: Store password as plain string in `security.password` (it's inside encrypted DB).
-          // And update backend to verify against that.
-          // Wait, backend `verify-note-password` logic I wrote expects `passwordHash` and `salt`.
-          // I should probably update backend to be simpler: `note.security.password === inputPassword`.
-          // Since the DB is encrypted, storing the note password inside it is safe enough.
-          // If the DB is cracked, they have the notes anyway.
-          // So I will update `main.js` later? No, I can't go back easily.
-          // I will use `crypto.subtle` to generate a hash here.
-          // But backend uses `crypto` module (Node).
-          // I'll just change the backend logic in next step if needed?
-          // Actually, I can just use a simple hash in backend too?
-          // Let's try to do it right.
-          // I'll just send the password to backend `save-note-security`?
-          // No, `save-notes` saves everything.
-          // I will generate a random salt and hash here using a simple loop or just store `password` in plain text in `security`.
-          // And update `main.js` to check `note.security.password`.
-          // I will assume for this step I can update `main.js` again or I made a mistake in `main.js`.
-          // In `main.js`, I wrote: `const derivedKey = crypto.pbkdf2Sync...`.
-          // I need to match that.
-          // I'll just implement a simple hash here and update `main.js` to use simple hash comparison.
-          // It's easier.
-
-          // Wait, I can't update `main.js` now without a new plan step.
-          // I'll use a simple SHA-256 hash here, and I'll update `main.js` to use SHA-256 too.
-          // I'll update `main.js` in the next step (I can add a step).
-          // Or I can try to match the PBKDF2 parameters.
-          // 100000 iterations is slow in JS? No, WebCrypto is fast.
-          // Let's just update `main.js` to be simpler.
-
-          // For now, let's just save the settings.
-      }
-
       const updatedNotes = notes.map(note => {
           if (note.id === settingsNoteId) {
               const security = {
                   ...note.security,
                   exportable,
-                  autoWipeDate,
+                  validityDuration: validityDuration ? parseInt(validityDuration) : null,
+                  lastRefreshedAt: validityDuration ? Date.now() : null, // Reset refresh on setting change
                   accessTimer: parseInt(accessTimerLimit) || 15
               };
               if (notePassword) {
-                  security.password = notePassword; // Storing plain text for now, assuming encrypted DB
+                  security.password = notePassword;
               }
               return { ...note, security, updatedAt: new Date().toISOString() };
           }
@@ -320,6 +247,24 @@ const Dashboard = ({ onLogout }) => {
       setIsSettingsOpen(false);
   };
 
+  const handleRefreshValidity = () => {
+      if (!selectedNoteId) return;
+      const updatedNotes = notes.map(note => {
+          if (note.id === selectedNoteId && note.security?.validityDuration) {
+              return {
+                  ...note,
+                  security: { ...note.security, lastRefreshedAt: Date.now() },
+                  updatedAt: new Date().toISOString()
+              };
+          }
+          return note;
+      });
+      setNotes(updatedNotes);
+      saveNotesToDisk(updatedNotes);
+      setStatusMessage('Validity Refreshed');
+      setTimeout(() => setStatusMessage(''), 2000);
+  };
+
   const handleExport = async () => {
      if (!selectedNoteId) return;
      const note = notes.find(n => n.id === selectedNoteId);
@@ -327,7 +272,6 @@ const Dashboard = ({ onLogout }) => {
          alert('This note is not exportable.');
          return;
      }
-     // Prompt for password
      const password = prompt('Enter a password to encrypt this export:');
      if (!password) return;
 
@@ -339,7 +283,6 @@ const Dashboard = ({ onLogout }) => {
      }
   };
 
-  // Autosave effect
   useEffect(() => {
     const timer = setTimeout(() => {
         if (notes.length > 0) {
@@ -351,15 +294,23 @@ const Dashboard = ({ onLogout }) => {
 
   const selectedNote = notes.find(n => n.id === selectedNoteId);
 
+  // Expiration calculation for UI
+  let expirationText = null;
+  if (selectedNote && selectedNote.security?.validityDuration && selectedNote.security.lastRefreshedAt) {
+      const expiresAt = selectedNote.security.lastRefreshedAt + (selectedNote.security.validityDuration * 60 * 60 * 1000);
+      const hoursLeft = (expiresAt - Date.now()) / (1000 * 60 * 60);
+      expirationText = hoursLeft > 0 ? `${hoursLeft.toFixed(1)}h remaining` : 'Expired';
+  }
+
   return (
-    <div className="flex h-screen bg-neutral-900 text-white overflow-hidden font-sans">
-      {/* Sidebar */}
-      <div className="w-64 bg-neutral-800 border-r border-neutral-700 flex flex-col">
-        <div className="p-4 border-b border-neutral-700 flex justify-between items-center bg-neutral-800 z-10">
-          <h2 className="text-xl font-bold text-gray-200">Vault</h2>
+    <div className="flex h-screen bg-gradient-to-br from-gray-900 via-neutral-900 to-black text-white overflow-hidden font-sans">
+      {/* Sidebar - Glassmorphism */}
+      <div className="w-64 bg-black/30 backdrop-blur-md border-r border-white/10 flex flex-col">
+        <div className="p-4 border-b border-white/10 flex justify-between items-center z-10">
+          <h2 className="text-xl font-bold text-gray-200 tracking-wider">VAULT</h2>
           <button
             onClick={handleAddNote}
-            className="p-2 bg-indigo-600 hover:bg-indigo-700 rounded-full transition-colors"
+            className="p-2 bg-indigo-600/80 hover:bg-indigo-700/80 rounded-full transition-colors border border-indigo-500/30 shadow-lg backdrop-blur-sm"
             title="New Note"
           >
             <FaPlus size={14} />
@@ -371,13 +322,13 @@ const Dashboard = ({ onLogout }) => {
             <div
               key={note.id}
               onClick={() => handleSelectNote(note.id)}
-              className={`p-4 border-b border-neutral-700 cursor-pointer hover:bg-neutral-700 transition-colors relative group ${
-                selectedNoteId === note.id ? 'bg-neutral-700 border-l-4 border-l-indigo-500' : ''
+              className={`p-4 border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors relative group ${
+                selectedNoteId === note.id ? 'bg-white/10 border-l-4 border-l-indigo-500' : ''
               }`}
             >
               <div className="flex items-center justify-between">
-                  <h3 className="font-semibold truncate pr-2 flex-1">{note.title || 'Untitled'}</h3>
-                  {note.security?.password && <FaLock size={12} className="text-yellow-500" />}
+                  <h3 className="font-semibold truncate pr-2 flex-1 text-sm">{note.title || 'Untitled'}</h3>
+                  {note.security?.password && <FaLock size={10} className="text-yellow-500/80" />}
               </div>
               <p className="text-xs text-gray-400 mt-1">
                 {format(new Date(note.updatedAt), 'MMM d, HH:mm')}
@@ -393,10 +344,10 @@ const Dashboard = ({ onLogout }) => {
           ))}
         </div>
 
-        <div className="p-4 border-t border-neutral-700">
+        <div className="p-4 border-t border-white/10">
            <button
              onClick={onLogout}
-             className="w-full flex items-center justify-center space-x-2 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-sm transition-colors"
+             className="w-full flex items-center justify-center space-x-2 py-2 bg-white/5 hover:bg-white/10 rounded text-sm transition-colors border border-white/5 backdrop-blur-sm"
            >
              <FaSignOutAlt />
              <span>Lock Vault</span>
@@ -405,80 +356,88 @@ const Dashboard = ({ onLogout }) => {
       </div>
 
       {/* Main Area */}
-      <div className="flex-1 flex flex-col bg-neutral-900 relative">
+      <div className="flex-1 flex flex-col relative bg-transparent">
         {unlockNoteId ? (
-            <div className="absolute inset-0 z-40 bg-black/90 flex flex-col items-center justify-center">
-                <div className="p-8 bg-neutral-800 rounded border border-neutral-700 w-96 text-center">
-                    <FaLock size={40} className="mx-auto mb-4 text-indigo-500" />
-                    <h2 className="text-xl font-bold mb-2">Note Locked</h2>
-                    <p className="text-red-400 text-sm mb-4">
-                        Time Remaining: {unlockTimeLeft}s
-                        <br/>
-                        <span className="text-xs text-gray-500">Note will be wiped if time expires or password incorrect.</span>
+            <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-xl flex flex-col items-center justify-center">
+                <div className="p-8 bg-black/40 backdrop-blur-xl rounded-xl border border-white/10 w-96 text-center shadow-2xl">
+                    <FaLock size={40} className="mx-auto mb-4 text-indigo-500 drop-shadow-glow" />
+                    <h2 className="text-xl font-bold mb-2 text-white">Restricted Access</h2>
+                    <p className="text-red-400 text-sm mb-4 font-mono">
+                        Self-Destruct in: {unlockTimeLeft}s
                     </p>
                     <form onSubmit={handleUnlockSubmit}>
                         <input
                             type="password"
                             value={unlockPassword}
                             onChange={(e) => setUnlockPassword(e.target.value)}
-                            className="w-full bg-neutral-900 border border-neutral-600 rounded px-3 py-2 mb-4 text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="Enter Note Password"
+                            className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 mb-4 text-white focus:outline-none focus:border-indigo-500/50 backdrop-blur-sm placeholder-gray-500"
+                            placeholder="Enter Password"
                             autoFocus
                         />
-                        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 py-2 rounded font-bold">
-                            Unlock
+                        <button type="submit" className="w-full bg-indigo-600/80 hover:bg-indigo-700/80 py-2 rounded font-bold backdrop-blur-sm border border-indigo-500/30 transition-all">
+                            Authenticate
                         </button>
                     </form>
                 </div>
             </div>
         ) : selectedNote ? (
           <>
-            <div className="p-6 border-b border-neutral-800 flex justify-between items-center">
+            <div className="p-6 border-b border-white/10 flex justify-between items-center bg-black/20 backdrop-blur-sm">
               <input
                 type="text"
                 value={selectedNote.title}
                 onChange={(e) => handleUpdateNoteTitle(e.target.value)}
-                className="bg-transparent text-3xl font-bold focus:outline-none w-full placeholder-gray-600"
+                className="bg-transparent text-3xl font-bold focus:outline-none w-full placeholder-gray-600 text-white/90"
                 placeholder="Note Title"
               />
-              <div className="flex items-center space-x-4 text-sm text-gray-400">
-                 <span>{statusMessage}</span>
+              <div className="flex items-center space-x-3 text-sm text-gray-400">
+                 <span className="text-xs font-mono">{statusMessage}</span>
 
-                 <button onClick={handleAddImageBlock} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-full" title="Insert Image from Clipboard">
+                 {selectedNote.security?.validityDuration && (
+                     <div className="flex items-center space-x-2 px-3 py-1 bg-white/5 rounded-full border border-white/5">
+                         <span className="text-xs text-orange-400">{expirationText}</span>
+                         <button onClick={handleRefreshValidity} className="text-indigo-400 hover:text-indigo-300" title="Refresh Validity License">
+                             <FaSync size={12} />
+                         </button>
+                     </div>
+                 )}
+
+                 <div className="h-6 w-px bg-white/10 mx-2"></div>
+
+                 <button onClick={handleAddImageBlock} className="p-2 bg-white/5 hover:bg-white/10 rounded-full border border-white/5 transition-colors" title="Insert Image">
                      <FaImage size={14} />
                  </button>
 
-                 <button onClick={handleExport} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-full" title="Export Note">
+                 <button onClick={handleExport} className="p-2 bg-white/5 hover:bg-white/10 rounded-full border border-white/5 transition-colors" title="Export Note">
                      <FaFileExport size={14} />
                  </button>
 
-                 <button onClick={handleOpenSettings} className="p-2 bg-neutral-700 hover:bg-neutral-600 rounded-full" title="Security Settings">
+                 <button onClick={handleOpenSettings} className="p-2 bg-white/5 hover:bg-white/10 rounded-full border border-white/5 transition-colors" title="Security Settings">
                      <FaCog size={14} />
                  </button>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="flex-1 overflow-y-auto p-8 space-y-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                 {Array.isArray(selectedNote.content) && selectedNote.content.map((block, index) => (
                     <div key={block.id} className="relative group">
                         {block.type === 'text' ? (
                             <textarea
                                 value={block.data}
                                 onChange={(e) => handleUpdateBlock(block.id, e.target.value)}
-                                className="w-full bg-transparent resize-none focus:outline-none text-gray-300 leading-relaxed text-lg min-h-[100px]"
-                                placeholder="Type here..."
+                                className="w-full bg-transparent resize-none focus:outline-none text-gray-300 leading-relaxed text-lg min-h-[100px] font-light tracking-wide"
+                                placeholder="Start typing..."
                             />
                         ) : block.type === 'image' ? (
-                            <div className="relative inline-block">
-                                <img src={block.data} alt="Note Content" className="max-w-full rounded shadow-lg border border-neutral-700" />
+                            <div className="relative inline-block rounded-lg overflow-hidden border border-white/10 shadow-lg">
+                                <img src={block.data} alt="Note Content" className="max-w-full" />
                                 <button
                                     onClick={() => {
-                                        // Remove block
                                         const newContent = selectedNote.content.filter(b => b.id !== block.id);
                                         const updatedNotes = notes.map(n => n.id === selectedNoteId ? { ...n, content: newContent } : n);
                                         setNotes(updatedNotes);
                                     }}
-                                    className="absolute top-2 right-2 bg-red-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                    className="absolute top-2 right-2 bg-red-600/80 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm"
                                 >
                                     <FaTimes size={12} />
                                 </button>
@@ -487,72 +446,77 @@ const Dashboard = ({ onLogout }) => {
                     </div>
                 ))}
 
-                {/* Add text block if empty or at end? No, just keep one text block at least? */}
                 <div
-                    className="h-20 cursor-text"
+                    className="h-32 cursor-text"
                     onClick={() => addBlock('text')}
                 >
-                    {/* Invisible click area to add new text block at bottom */}
                 </div>
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-600">
-            Select a note or create a new one
+          <div className="flex-1 flex items-center justify-center text-gray-500 font-light tracking-widest uppercase text-sm">
+            Select a secure note to view
           </div>
         )}
       </div>
 
-      {/* Security Modal */}
+      {/* Security Modal - Glassmorphism */}
       <AnimatePresence>
           {isSettingsOpen && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
                   <motion.div
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0.9, opacity: 0 }}
-                    className="bg-neutral-800 p-6 rounded-lg border border-neutral-700 w-96 shadow-2xl"
+                    className="bg-black/50 backdrop-blur-xl p-8 rounded-2xl border border-white/10 w-96 shadow-2xl relative overflow-hidden"
                   >
-                      <h3 className="text-xl font-bold mb-4 flex items-center"><FaLock className="mr-2"/> Note Security</h3>
+                      {/* Decorative gradient blob */}
+                      <div className="absolute -top-10 -right-10 w-32 h-32 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
 
-                      <div className="space-y-4">
+                      <h3 className="text-xl font-bold mb-6 flex items-center text-white relative z-10"><FaLock className="mr-3 text-indigo-400"/> Security Protocols</h3>
+
+                      <div className="space-y-5 relative z-10">
                           <div>
-                              <label className="block text-sm text-gray-400 mb-1">Per-Note Password (Leave blank to remove)</label>
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Per-Note Password</label>
                               <input
                                 type="password"
-                                className="w-full bg-neutral-900 border border-neutral-600 rounded px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
-                                placeholder="Set Password"
+                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50 transition-colors placeholder-gray-600"
+                                placeholder="Set new password..."
                                 value={notePassword}
                                 onChange={(e) => setNotePassword(e.target.value)}
                               />
-                              <p className="text-xs text-red-400 mt-1">Warning: One wrong attempt will wipe ALL data.</p>
+                              <p className="text-[10px] text-red-400 mt-1 opacity-80">Warning: Failed attempt triggers immediate wipe.</p>
                           </div>
 
-                          <div className="flex items-center justify-between">
-                              <label className="text-sm text-gray-400">Allow Export</label>
+                          <div className="flex items-center justify-between py-2 border-b border-white/5">
+                              <label className="text-sm text-gray-300">Allow External Export</label>
                               <input
                                 type="checkbox"
                                 checked={exportable}
                                 onChange={(e) => setExportable(e.target.checked)}
-                                className="w-5 h-5 accent-indigo-600"
+                                className="w-4 h-4 accent-indigo-500 bg-white/10 border-white/20 rounded"
                               />
                           </div>
 
                           <div>
-                              <label className="block text-sm text-gray-400 mb-1">Auto-Disintegrate Date</label>
-                              <input
-                                type="datetime-local"
-                                className="w-full bg-neutral-900 border border-neutral-600 rounded px-3 py-2 text-white"
-                                value={autoWipeDate}
-                                onChange={(e) => setAutoWipeDate(e.target.value)}
-                              />
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Dead Man's Switch (Hours)</label>
+                              <div className="flex items-center space-x-2">
+                                  <input
+                                    type="number"
+                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50"
+                                    value={validityDuration}
+                                    placeholder="Disabled"
+                                    onChange={(e) => setValidityDuration(e.target.value)}
+                                  />
+                              </div>
+                              <p className="text-[10px] text-gray-500 mt-1">Must be refreshed every X hours or note auto-destructs.</p>
                           </div>
 
                           <div>
-                              <label className="block text-sm text-gray-400 mb-1">Access Timer (Seconds)</label>
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Access Timer (Seconds)</label>
                               <input
                                 type="number"
-                                className="w-full bg-neutral-900 border border-neutral-600 rounded px-3 py-2 text-white"
+                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50"
                                 value={accessTimerLimit}
                                 onChange={(e) => setAccessTimerLimit(e.target.value)}
                                 min="5"
@@ -560,18 +524,18 @@ const Dashboard = ({ onLogout }) => {
                           </div>
                       </div>
 
-                      <div className="mt-6 flex justify-end space-x-3">
+                      <div className="mt-8 flex justify-end space-x-3 relative z-10">
                           <button
                             onClick={() => setIsSettingsOpen(false)}
-                            className="px-4 py-2 rounded text-gray-400 hover:text-white"
+                            className="px-4 py-2 rounded-lg text-gray-400 hover:text-white transition-colors text-sm"
                           >
                               Cancel
                           </button>
                           <button
                             onClick={handleSaveSettings}
-                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-white font-bold"
+                            className="px-6 py-2 bg-indigo-600/90 hover:bg-indigo-700/90 rounded-lg text-white font-bold text-sm shadow-lg shadow-indigo-500/20 backdrop-blur-sm transition-all"
                           >
-                              Save Settings
+                              Engage
                           </button>
                       </div>
                   </motion.div>

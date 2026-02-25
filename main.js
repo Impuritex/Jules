@@ -313,14 +313,15 @@ ipcMain.handle('load-notes', async () => {
     
     let notes = JSON.parse(decrypted);
 
-    // Auto-Disintegrate Logic
+    // Auto-Disintegrate Logic (Dead Man's Switch)
     const now = Date.now();
     let modified = false;
     const initialCount = notes.length;
 
     notes = notes.filter(note => {
-        if (note.security && note.security.autoWipeDate) {
-            const expiry = new Date(note.security.autoWipeDate).getTime();
+        if (note.security && note.security.validityDuration && note.security.lastRefreshedAt) {
+            // validityDuration is in hours
+            const expiry = note.security.lastRefreshedAt + (note.security.validityDuration * 60 * 60 * 1000);
             if (now > expiry) {
                 return false; // Wipe
             }
