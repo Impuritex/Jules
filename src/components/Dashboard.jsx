@@ -1,8 +1,43 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { format, addHours, differenceInHours } from 'date-fns';
+import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FaPlus, FaTrash, FaSignOutAlt, FaSave, FaCopy, FaLock, FaCog, FaImage, FaCheck, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
+import { FaPlus, FaTrash, FaSignOutAlt, FaLock, FaCog, FaImage, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
+
+const AutoTextarea = ({ value, onChange, onKeyDown, placeholder, autoFocus, id, setRef }) => {
+  const textareaRef = useRef(null);
+
+  useLayoutEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'inherit';
+      const scrollHeight = textareaRef.current.scrollHeight;
+      textareaRef.current.style.height = `${Math.max(scrollHeight, 24)}px`;
+    }
+  }, [value]);
+
+  useEffect(() => {
+      if (setRef) setRef(id, textareaRef.current);
+  }, [id, setRef]);
+
+  useEffect(() => {
+      if (autoFocus && textareaRef.current) {
+          textareaRef.current.focus();
+      }
+  }, [autoFocus]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      onChange={onChange}
+      onKeyDown={onKeyDown}
+      placeholder={placeholder}
+      className="w-full bg-transparent resize-none focus:outline-none text-gray-300 leading-relaxed text-lg overflow-hidden py-1"
+      rows={1}
+      style={{ minHeight: '24px' }}
+    />
+  );
+};
 
 const Dashboard = ({ onLogout }) => {
   const [notes, setNotes] = useState([]);
@@ -25,6 +60,7 @@ const Dashboard = ({ onLogout }) => {
   const [unlockedNotes, setUnlockedNotes] = useState(new Set());
 
   const unlockTimerRef = useRef(null);
+  const blockRefs = useRef(new Map());
 
   useEffect(() => {
     loadNotes();
@@ -111,6 +147,11 @@ const Dashboard = ({ onLogout }) => {
     setNotes(updatedNotes);
   };
 
+  const updateNoteContent = (newContent) => {
+      const updatedNotes = notes.map(n => n.id === selectedNoteId ? { ...n, content: newContent, updatedAt: new Date().toISOString() } : n);
+      setNotes(updatedNotes);
+  };
+
   const handleUpdateBlock = (blockId, value) => {
       const updatedNotes = notes.map(note => {
           if (note.id === selectedNoteId) {
@@ -126,6 +167,82 @@ const Dashboard = ({ onLogout }) => {
       });
       setNotes(updatedNotes);
   };
+
+  const handleBlockKeyDown = (e, blockId, index) => {
+        if (!selectedNote) return;
+
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            const block = selectedNote.content[index];
+            const cursorPosition = e.target.selectionStart;
+            const textBefore = block.data.slice(0, cursorPosition);
+            const textAfter = block.data.slice(cursorPosition);
+
+            // Update current block
+            const updatedContent = [...selectedNote.content];
+            updatedContent[index] = { ...block, data: textBefore };
+
+            // Create new block
+            const newBlock = { id: uuidv4(), type: 'text', data: textAfter };
+            updatedContent.splice(index + 1, 0, newBlock);
+
+            updateNoteContent(updatedContent);
+
+            // Focus new block
+            setTimeout(() => {
+                const el = blockRefs.current.get(newBlock.id);
+                if (el) {
+                    el.focus();
+                    el.setSelectionRange(0, 0);
+                }
+            }, 0);
+        } else if (e.key === 'Backspace' && e.target.selectionStart === 0 && e.target.selectionEnd === 0 && index > 0) {
+             const currentBlock = selectedNote.content[index];
+             const prevBlock = selectedNote.content[index - 1];
+
+             // Only merge if previous block is text
+             if (prevBlock.type === 'text') {
+                 e.preventDefault();
+                 const prevLength = prevBlock.data.length;
+                 const updatedContent = [...selectedNote.content];
+                 updatedContent[index - 1] = { ...prevBlock, data: prevBlock.data + currentBlock.data };
+                 updatedContent.splice(index, 1);
+
+                 updateNoteContent(updatedContent);
+                 setTimeout(() => {
+                    const el = blockRefs.current.get(prevBlock.id);
+                    if (el) {
+                        el.focus();
+                        el.setSelectionRange(prevLength, prevLength);
+                    }
+                 }, 0);
+             }
+        } else if (e.key === 'ArrowUp' && index > 0) {
+            const prevBlock = selectedNote.content[index - 1];
+             if (prevBlock.type === 'text' && e.target.selectionStart === 0) {
+                 e.preventDefault();
+                 const el = blockRefs.current.get(prevBlock.id);
+                 if (el) {
+                     el.focus();
+                     // Maintain relative cursor position or go to end?
+                     // Standard is usually last line, but difficult to calculate line wrapping in textarea.
+                     // Going to end of previous block is a reasonable approximation for "up from start".
+                     const len = el.value.length;
+                     el.setSelectionRange(len, len);
+                 }
+             }
+        } else if (e.key === 'ArrowDown' && index < selectedNote.content.length - 1) {
+             const nextBlock = selectedNote.content[index + 1];
+             if (nextBlock.type === 'text' && e.target.selectionStart === e.target.value.length) {
+                 e.preventDefault();
+                 const el = blockRefs.current.get(nextBlock.id);
+                 if (el) {
+                     el.focus();
+                     el.setSelectionRange(0, 0);
+                 }
+             }
+        }
+    };
 
   const handleAddImageBlock = async () => {
       try {
@@ -414,18 +531,23 @@ const Dashboard = ({ onLogout }) => {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 space-y-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+            <div className="flex-1 overflow-y-auto p-8 space-y-2 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                 {Array.isArray(selectedNote.content) && selectedNote.content.map((block, index) => (
                     <div key={block.id} className="relative group">
                         {block.type === 'text' ? (
-                            <textarea
+                            <AutoTextarea
+                                id={block.id}
                                 value={block.data}
                                 onChange={(e) => handleUpdateBlock(block.id, e.target.value)}
-                                className="w-full bg-transparent resize-none focus:outline-none text-gray-300 leading-relaxed text-lg min-h-[100px] font-light tracking-wide"
-                                placeholder="Start typing..."
+                                onKeyDown={(e) => handleBlockKeyDown(e, block.id, index)}
+                                setRef={(id, el) => {
+                                    if (el) blockRefs.current.set(id, el);
+                                    else blockRefs.current.delete(id);
+                                }}
+                                placeholder={index === 0 && selectedNote.content.length === 1 ? "Start typing..." : ""}
                             />
                         ) : block.type === 'image' ? (
-                            <div className="relative inline-block rounded-lg overflow-hidden border border-white/10 shadow-lg">
+                            <div className="relative inline-block rounded-lg overflow-hidden border border-white/10 shadow-lg my-2">
                                 <img src={block.data} alt="Note Content" className="max-w-full" />
                                 <button
                                     onClick={() => {
