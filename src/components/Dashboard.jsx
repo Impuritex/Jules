@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { format, addHours, differenceInHours } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FaPlus, FaTrash, FaSignOutAlt, FaSave, FaCopy, FaBell, FaLock, FaCog, FaImage, FaCheck, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
+import { FaPlus, FaTrash, FaSignOutAlt, FaSave, FaCopy, FaLock, FaCog, FaImage, FaCheck, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
 
 const Dashboard = ({ onLogout }) => {
   const [notes, setNotes] = useState([]);
@@ -25,13 +25,9 @@ const Dashboard = ({ onLogout }) => {
   const [unlockedNotes, setUnlockedNotes] = useState(new Set());
 
   const unlockTimerRef = useRef(null);
-  const scheduledReminders = useRef(new Set());
 
   useEffect(() => {
     loadNotes();
-    if (Notification.permission !== 'granted') {
-      Notification.requestPermission();
-    }
   }, []);
 
   useEffect(() => {
