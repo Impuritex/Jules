@@ -52,7 +52,24 @@ function createWindow() {
     mainWindow.webContents.send('focus-app');
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+  const indexPath = path.join(__dirname, 'dist', 'index.html');
+  console.log('Loading index from:', indexPath);
+
+  if (!fs.existsSync(indexPath)) {
+      console.error('Index file not found at:', indexPath);
+      // In development, we might not have a build yet if started via just 'electron .' without build.
+      // But we should warn the user.
+      dialog.showErrorBox('Startup Error', `Application build not found at: ${indexPath}\n\nPlease run 'npm run build' before starting the application.`);
+      // We can try to load a fallback or just quit, but let's try to load it anyway to let Electron's standard error handling kick in too if needed,
+      // but the dialog is better.
+      // app.quit(); // Better to let them see the dialog
+      return;
+  }
+
+  mainWindow.loadFile(indexPath).catch(e => {
+      console.error('Failed to load index.html:', e);
+      dialog.showErrorBox('Load Error', `Failed to load application: ${e.message}`);
+  });
 }
 
 let inactivityTimer;
