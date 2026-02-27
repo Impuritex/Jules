@@ -11,8 +11,21 @@ contextBridge.exposeInMainWorld('electron', {
   verifyNotePassword: (noteId, password) => ipcRenderer.invoke('verify-note-password', noteId, password),
   exportNote: (noteId, password) => ipcRenderer.invoke('export-note', { noteId, password }),
   importNote: (password) => ipcRenderer.invoke('import-note', password),
+  changePassword: (oldPassword, newPassword) => ipcRenderer.invoke('change-password', oldPassword, newPassword),
 
-  onWiped: (callback) => ipcRenderer.on('wiped', callback),
-  onBlur: (callback) => ipcRenderer.on('blur-app', callback),
-  onFocus: (callback) => ipcRenderer.on('focus-app', callback),
+  onWiped: (callback) => {
+      const subscription = (event, ...args) => callback(...args);
+      ipcRenderer.on('wiped', subscription);
+      return () => ipcRenderer.removeListener('wiped', subscription);
+  },
+  onBlur: (callback) => {
+      const subscription = (event, ...args) => callback(...args);
+      ipcRenderer.on('blur-app', subscription);
+      return () => ipcRenderer.removeListener('blur-app', subscription);
+  },
+  onFocus: (callback) => {
+      const subscription = (event, ...args) => callback(...args);
+      ipcRenderer.on('focus-app', subscription);
+      return () => ipcRenderer.removeListener('focus-app', subscription);
+  },
 });

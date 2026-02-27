@@ -10,6 +10,7 @@ let mainWindow;
 let sessionKey = null;
 let isDuressSession = false;
 let failedAttempts = 0;
+let authIndex = -1; // To track which header slot is active
 
 // Crypto Constants
 const ALGORITHM = 'aes-256-gcm';
@@ -19,6 +20,7 @@ const SALT_LENGTH = 16;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const MAX_PASSWORD_LENGTH = 128;
+const HEADER_PAD_LENGTH = 64; // Fixed length for opaque headers
 
 function deriveKey(password, salt) {
   if (typeof password !== 'string') {
@@ -44,6 +46,16 @@ function createWindow() {
     },
   });
 
+  mainWindow.setMenu(null);
+
+  if (!app.isPackaged) {
+      mainWindow.webContents.openDevTools();
+  } else {
+      mainWindow.webContents.on('devtools-opened', () => {
+          mainWindow.webContents.closeDevTools();
+      });
+  }
+
   mainWindow.on('blur', () => {
     mainWindow.webContents.send('blur-app');
   });
@@ -53,16 +65,9 @@ function createWindow() {
   });
 
   const indexPath = path.join(__dirname, 'dist', 'index.html');
-  console.log('Loading index from:', indexPath);
 
   if (!fs.existsSync(indexPath)) {
-      console.error('Index file not found at:', indexPath);
-      // In development, we might not have a build yet if started via just 'electron .' without build.
-      // But we should warn the user.
       dialog.showErrorBox('Startup Error', `Application build not found at: ${indexPath}\n\nPlease run 'npm run build' before starting the application.`);
-      // We can try to load a fallback or just quit, but let's try to load it anyway to let Electron's standard error handling kick in too if needed,
-      // but the dialog is better.
-      // app.quit(); // Better to let them see the dialog
       return;
   }
 
@@ -98,45 +103,60 @@ app.on('window-all-closed', () => {
 
 // --- Security / Data Logic ---
 
+function encryptHeader(password, token) {
+    const salt = crypto.randomBytes(SALT_LENGTH);
+    const key = deriveKey(password, salt);
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+
+    // Pad token to fixed length
+    const tokenBuffer = Buffer.alloc(HEADER_PAD_LENGTH);
+    tokenBuffer.write(token);
+
+    let encrypted = cipher.update(tokenBuffer);
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    return {
+        salt: salt.toString('hex'),
+        iv: iv.toString('hex'),
+        encrypted: encrypted.toString('hex'),
+        authTag: authTag.toString('hex')
+    };
+}
+
+function createFakeHeader() {
+    // Generate random garbage that looks like a header
+    // Encrypted length = HEADER_PAD_LENGTH for AES-GCM (no padding, but we padded input)
+    // Actually AES-GCM output length = input length.
+    return {
+        salt: crypto.randomBytes(SALT_LENGTH).toString('hex'),
+        iv: crypto.randomBytes(IV_LENGTH).toString('hex'),
+        encrypted: crypto.randomBytes(HEADER_PAD_LENGTH).toString('hex'),
+        authTag: crypto.randomBytes(AUTH_TAG_LENGTH).toString('hex')
+    };
+}
+
 function createAccountInternal(password, duressPassword = null) {
-  const salt = crypto.randomBytes(SALT_LENGTH);
-  const key = deriveKey(password, salt);
+  const mainHeader = encryptHeader(password, 'VALID');
+  let duressHeader;
 
-  // Verification Hash
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  let encrypted = cipher.update('VALID', 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag();
-
-  let duressAuth = null;
   if (duressPassword) {
-      const dSalt = crypto.randomBytes(SALT_LENGTH);
-      const dKey = deriveKey(duressPassword, dSalt);
-      const dIv = crypto.randomBytes(IV_LENGTH);
-      const dCipher = crypto.createCipheriv(ALGORITHM, dKey, dIv);
-      let dEncrypted = dCipher.update('DURESS_VALID', 'utf8', 'hex');
-      dEncrypted += dCipher.final('hex');
-      const dAuthTag = dCipher.getAuthTag();
-
-      duressAuth = {
-          salt: dSalt.toString('hex'),
-          iv: dIv.toString('hex'),
-          encrypted: dEncrypted,
-          authTag: dAuthTag.toString('hex')
-      };
+      duressHeader = encryptHeader(duressPassword, 'DURESS_VALID');
+  } else {
+      duressHeader = createFakeHeader();
   }
 
-  const authData = JSON.stringify({
-    salt: salt.toString('hex'),
-    iv: iv.toString('hex'),
-    encrypted: encrypted,
-    authTag: authTag.toString('hex'),
-    duress: duressAuth
-  });
+  const headers = [mainHeader, duressHeader];
+  // Shuffle to hide which is which
+  if (Math.random() > 0.5) headers.reverse();
 
-  fs.writeFileSync(AUTH_FILE, authData);
-  return key;
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(headers));
+
+  // Return main key
+  // Need to re-derive because we didn't keep it from encryptHeader helper
+  const salt = Buffer.from(mainHeader.salt, 'hex');
+  return deriveKey(password, salt);
 }
 
 function saveNotesInternal(notes, key) {
@@ -170,7 +190,7 @@ function wipeData(newPassword = null) {
   wipeFile(AUTH_FILE);
   
   if (newPassword) {
-      // Honeypot Mode: Re-initialize with the WRONG password and fake notes
+      // Honeypot Mode
       const key = createAccountInternal(newPassword);
       const fakeNotes = [
           { id: 'fake1', title: 'Shopping List', content: 'Milk, Eggs, Bread', updatedAt: new Date().toISOString() },
@@ -179,19 +199,68 @@ function wipeData(newPassword = null) {
       ];
       saveNotesInternal(fakeNotes, key);
 
-      // Do NOT send wiped event. Let the user think they just failed the password.
       sessionKey = null;
   } else {
-      // Just create garbage file to simulate encrypted data?
-      // Or just leave it wiped (deleted).
-      // Prompt says "filled with 'fake' realistic looking junk".
-      // If no password provided (e.g. duress wipe?), we can't encrypt valid junk.
-      // So just random bytes.
       fs.writeFileSync(DATA_FILE, crypto.randomBytes(1024));
-
       sessionKey = null;
       if (mainWindow) mainWindow.webContents.send('wiped');
   }
+}
+
+function loadAndExpireNotes() {
+    if (!sessionKey) return [];
+
+    if (isDuressSession) {
+        return [
+            { id: 'fake1', title: 'Grocery List', content: 'Milk, Eggs, Bread, Butter', updatedAt: new Date().toISOString() },
+            { id: 'fake2', title: 'Meeting Notes', content: 'Discussed project timeline. Everything is on track.', updatedAt: new Date().toISOString() },
+            { id: 'fake3', title: 'Vacation Ideas', content: 'Hawaii or Bahamas? Maybe a cruise.', updatedAt: new Date().toISOString() }
+        ];
+    }
+
+    if (!fs.existsSync(DATA_FILE)) return [];
+
+    try {
+        const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
+        let data;
+        try {
+            data = JSON.parse(fileContent);
+        } catch(e) {
+            throw new Error('Data corruption detected');
+        }
+
+        const decipher = crypto.createDecipheriv(ALGORITHM, sessionKey, Buffer.from(data.iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(data.authTag, 'hex'));
+        let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+
+        let notes = JSON.parse(decrypted);
+
+        // Auto-Disintegrate Logic (Dead Man's Switch)
+        const now = Date.now();
+        const initialCount = notes.length;
+
+        notes = notes.filter(note => {
+            if (note.security && note.security.validityDuration && note.security.lastRefreshedAt) {
+                const expiry = note.security.lastRefreshedAt + (note.security.validityDuration * 60 * 60 * 1000);
+                if (now > expiry) {
+                    return false; // Wipe
+                }
+            }
+            return true;
+        });
+
+        if (notes.length !== initialCount) {
+            console.log(`Auto-disintegrated ${initialCount - notes.length} notes.`);
+            saveNotesInternal(notes, sessionKey);
+        }
+
+        return notes;
+    } catch (err) {
+        console.error('Load notes failed', err);
+        wipeData();
+        throw new Error('Integrity check failed. Data wiped.');
+    }
 }
 
 ipcMain.handle('check-account-exists', () => {
@@ -199,12 +268,12 @@ ipcMain.handle('check-account-exists', () => {
 });
 
 ipcMain.handle('create-account', async (event, password, duressPassword) => {
+  if (typeof password !== 'string') throw new Error('Invalid password type');
+  if (duressPassword !== null && typeof duressPassword !== 'string') throw new Error('Invalid duress password type');
+
   try {
     const key = createAccountInternal(password, duressPassword);
-    
-    // Create empty notes file
     saveNotesInternal([], key);
-
     sessionKey = key;
     return { success: true };
   } catch (err) {
@@ -215,64 +284,86 @@ ipcMain.handle('create-account', async (event, password, duressPassword) => {
 
 ipcMain.handle('login', async (event, password, isNumLockActive) => {
   if (!fs.existsSync(AUTH_FILE)) return { success: false, error: 'No account found' };
+  if (typeof password !== 'string') return { success: false, error: 'Invalid password type' };
 
   let success = false;
   let isMain = false;
   let isDuress = false;
   let key = null;
 
-  // Num Lock Check
-  if (isNumLockActive !== false) { // Assuming undefined/null means check skipped or not provided (backward compat? No, force it)
-       // Actually, from requirements: "during password entry num lock must be active. otherwise even if the password is correct it will show up as incorrect."
-       // So if isNumLockActive is false, we force failure.
-  }
-
-  // We'll proceed to check password anyway to distinguish between "Wrong Password" and "NumLock missing" logic internally if needed,
-  // but strictly we should just treat it as wrong password.
-  // However, we need to know IF the password WAS correct to know if we should increment failed attempts?
-  // "otherwise even if the password is correct it will show up as incorrect."
-  // This implies it counts as a failed attempt.
-
-  if (isNumLockActive) {
+  if (isNumLockActive !== false) {
       try {
-        const authData = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+        const authContent = fs.readFileSync(AUTH_FILE, 'utf8');
+        const authData = JSON.parse(authContent);
 
-        // 1. Try Main Password
-        try {
-            const salt = Buffer.from(authData.salt, 'hex');
-            const derivedKey = deriveKey(password, salt);
+        // Handle New Format (Array of Headers)
+        if (Array.isArray(authData)) {
+            for (let i = 0; i < authData.length; i++) {
+                const h = authData[i];
+                try {
+                    const salt = Buffer.from(h.salt, 'hex');
+                    const derivedKey = deriveKey(password, salt);
 
-            const decipher = crypto.createDecipheriv(ALGORITHM, derivedKey, Buffer.from(authData.iv, 'hex'));
-            decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
-            let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
-            decrypted += decipher.final('utf8');
+                    const decipher = crypto.createDecipheriv(ALGORITHM, derivedKey, Buffer.from(h.iv, 'hex'));
+                    decipher.setAuthTag(Buffer.from(h.authTag, 'hex'));
+                    let decrypted = decipher.update(h.encrypted, 'hex');
+                    decrypted = Buffer.concat([decrypted, decipher.final()]);
 
-            if (decrypted === 'VALID') {
-              key = derivedKey;
-              isMain = true;
-              success = true;
-            }
-        } catch (mainErr) {
-            // Main password failed
-        }
+                    // Check start of buffer (removing null padding)
+                    const token = decrypted.toString('utf8').replace(/\0/g, '');
 
-        // 2. Try Duress Password
-        if (!success && authData.duress) {
-            try {
-                const dSalt = Buffer.from(authData.duress.salt, 'hex');
-                const dKey = deriveKey(password, dSalt);
-                const dDecipher = crypto.createDecipheriv(ALGORITHM, dKey, Buffer.from(authData.duress.iv, 'hex'));
-                dDecipher.setAuthTag(Buffer.from(authData.duress.authTag, 'hex'));
-                let dDecrypted = dDecipher.update(authData.duress.encrypted, 'hex', 'utf8');
-                dDecrypted += dDecipher.final('utf8');
-
-                if (dDecrypted === 'DURESS_VALID') {
-                    key = dKey;
-                    isDuress = true;
-                    success = true;
+                    if (token === 'VALID') {
+                        key = derivedKey;
+                        isMain = true;
+                        success = true;
+                        authIndex = i;
+                        break;
+                    } else if (token === 'DURESS_VALID') {
+                        key = derivedKey;
+                        isDuress = true;
+                        success = true;
+                        authIndex = i;
+                        break;
+                    }
+                } catch (e) {
+                    // Decryption failed for this header
                 }
-            } catch (duressErr) {
-                // Duress failed
+            }
+        }
+        // Handle Legacy Format (Object)
+        else {
+             // ... Old Logic for fallback ...
+             try {
+                const salt = Buffer.from(authData.salt, 'hex');
+                const derivedKey = deriveKey(password, salt);
+
+                const decipher = crypto.createDecipheriv(ALGORITHM, derivedKey, Buffer.from(authData.iv, 'hex'));
+                decipher.setAuthTag(Buffer.from(authData.authTag, 'hex'));
+                let decrypted = decipher.update(authData.encrypted, 'hex', 'utf8');
+                decrypted += decipher.final('utf8');
+
+                if (decrypted === 'VALID') {
+                  key = derivedKey;
+                  isMain = true;
+                  success = true;
+                }
+            } catch (mainErr) {}
+
+            if (!success && authData.duress) {
+                try {
+                    const dSalt = Buffer.from(authData.duress.salt, 'hex');
+                    const dKey = deriveKey(password, dSalt);
+                    const dDecipher = crypto.createDecipheriv(ALGORITHM, dKey, Buffer.from(authData.duress.iv, 'hex'));
+                    dDecipher.setAuthTag(Buffer.from(authData.duress.authTag, 'hex'));
+                    let dDecrypted = dDecipher.update(authData.duress.encrypted, 'hex', 'utf8');
+                    dDecrypted += dDecipher.final('utf8');
+
+                    if (dDecrypted === 'DURESS_VALID') {
+                        key = dKey;
+                        isDuress = true;
+                        success = true;
+                    }
+                } catch (duressErr) {}
             }
         }
 
@@ -285,6 +376,12 @@ ipcMain.handle('login', async (event, password, isNumLockActive) => {
       sessionKey = key;
       failedAttempts = 0;
       isDuressSession = isDuress;
+      try {
+          loadAndExpireNotes();
+      } catch (e) {
+          sessionKey = null;
+          return { success: false, error: 'Vault corrupted or tampered' };
+      }
       return { success: true };
   }
 
@@ -292,76 +389,59 @@ ipcMain.handle('login', async (event, password, isNumLockActive) => {
   console.log(`Failed attempt ${failedAttempts}/2`);
 
   if (failedAttempts >= 2) {
-    // Honeypot time: Wipe and replace with junk encrypted by THIS wrong password
     wipeData(password);
-    // Return standard error to mock 3 attempts (user thinks 1 remaining)
     return { success: false, error: 'Invalid password', remaining: 1 };
   }
   
-  return { success: false, error: 'Invalid password', remaining: 3 - failedAttempts }; // Display 3, real limit 2
+  return { success: false, error: 'Invalid password', remaining: 3 - failedAttempts };
+});
+
+ipcMain.handle('change-password', async (event, oldPassword, newPassword) => {
+    if (!sessionKey) throw new Error('Not authenticated');
+    if (isDuressSession) throw new Error('Cannot change password in Restricted Mode');
+    if (typeof oldPassword !== 'string' || typeof newPassword !== 'string') throw new Error('Invalid arguments');
+
+    // With new format, we need to know authIndex.
+    if (authIndex === -1) throw new Error('Session state invalid (index unknown)');
+
+    try {
+        const notes = loadAndExpireNotes();
+        const authContent = fs.readFileSync(AUTH_FILE, 'utf8');
+        const authData = JSON.parse(authContent);
+
+        if (!Array.isArray(authData)) throw new Error('Legacy account format. Please re-create account to upgrade security.');
+
+        // 1. Create new Header for current slot
+        const newHeader = encryptHeader(newPassword, 'VALID');
+
+        // 2. Update authData array
+        authData[authIndex] = newHeader;
+
+        // 3. Save Auth
+        fs.writeFileSync(AUTH_FILE, JSON.stringify(authData));
+
+        // 4. Re-encrypt notes with new key
+        const salt = Buffer.from(newHeader.salt, 'hex');
+        const newKey = deriveKey(newPassword, salt);
+
+        saveNotesInternal(notes, newKey);
+        sessionKey = newKey;
+
+        return { success: true };
+    } catch (err) {
+        console.error('Change password failed', err);
+        return { success: false, error: err.message };
+    }
 });
 
 ipcMain.handle('load-notes', async () => {
   if (!sessionKey) throw new Error('Not authenticated');
-
-  if (isDuressSession) {
-      return [
-          { id: 'fake1', title: 'Grocery List', content: 'Milk, Eggs, Bread, Butter', updatedAt: new Date().toISOString() },
-          { id: 'fake2', title: 'Meeting Notes', content: 'Discussed project timeline. Everything is on track.', updatedAt: new Date().toISOString() },
-          { id: 'fake3', title: 'Vacation Ideas', content: 'Hawaii or Bahamas? Maybe a cruise.', updatedAt: new Date().toISOString() }
-      ];
-  }
-
-  if (!fs.existsSync(DATA_FILE)) return []; 
-
-  try {
-    const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
-    let data;
-    try {
-        data = JSON.parse(fileContent);
-    } catch(e) {
-        throw new Error('Data corruption detected');
-    }
-
-    const decipher = crypto.createDecipheriv(ALGORITHM, sessionKey, Buffer.from(data.iv, 'hex'));
-    decipher.setAuthTag(Buffer.from(data.authTag, 'hex'));
-    let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    
-    let notes = JSON.parse(decrypted);
-
-    // Auto-Disintegrate Logic (Dead Man's Switch)
-    const now = Date.now();
-    let modified = false;
-    const initialCount = notes.length;
-
-    notes = notes.filter(note => {
-        if (note.security && note.security.validityDuration && note.security.lastRefreshedAt) {
-            // validityDuration is in hours
-            const expiry = note.security.lastRefreshedAt + (note.security.validityDuration * 60 * 60 * 1000);
-            if (now > expiry) {
-                return false; // Wipe
-            }
-        }
-        return true;
-    });
-
-    if (notes.length !== initialCount) {
-        console.log(`Auto-disintegrated ${initialCount - notes.length} notes.`);
-        saveNotesInternal(notes, sessionKey);
-    }
-
-    return notes;
-  } catch (err) {
-    console.error('Load notes failed', err);
-    wipeData();
-    throw new Error('Integrity check failed. Data wiped.');
-  }
+  return loadAndExpireNotes();
 });
 
 ipcMain.handle('save-notes', async (event, notes) => {
   if (!sessionKey) throw new Error('Not authenticated');
-  
+  if (!Array.isArray(notes)) throw new Error('Invalid notes format');
   try {
     saveNotesInternal(notes, sessionKey);
     return { success: true };
@@ -381,10 +461,8 @@ ipcMain.handle('wipe-data', () => {
 
 ipcMain.handle('verify-note-password', async (event, noteId, password) => {
     if (!sessionKey) throw new Error('Not authenticated');
+    if (typeof noteId !== 'string' || typeof password !== 'string') throw new Error('Invalid arguments');
 
-    // We need to find the note. Since we don't store note passwords separately in backend,
-    // we load the notes and check.
-    // This assumes the frontend sends the password to verify against what we have in the DB.
     try {
         const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
         const data = JSON.parse(fileContent);
@@ -396,23 +474,17 @@ ipcMain.handle('verify-note-password', async (event, noteId, password) => {
 
         const note = notes.find(n => n.id === noteId);
         if (!note || !note.security || !note.security.password) {
-             // If note has no password, verification is moot, but let's say success
              return { success: true };
         }
 
-        // Check password
-        // Since the database itself is encrypted, we store the note password in the security object.
-        // We compare directly.
         if (note.security.password === password) {
             return { success: true };
         } else {
-             // Wipe everything on wrong note password
              wipeData();
              return { success: false, wiped: true };
         }
     } catch (err) {
         console.error('Verify note password failed', err);
-        // If decryption fails here, it's weird, but we should probably wipe.
         wipeData();
         return { success: false, wiped: true };
     }
@@ -420,9 +492,9 @@ ipcMain.handle('verify-note-password', async (event, noteId, password) => {
 
 ipcMain.handle('export-note', async (event, { noteId, password }) => {
    if (!sessionKey) throw new Error('Not authenticated');
+   if (typeof noteId !== 'string' || typeof password !== 'string') throw new Error('Invalid arguments');
 
    try {
-     // Fetch fresh note data to ensure security flags are respected
      const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
      const data = JSON.parse(fileContent);
      const decipher = crypto.createDecipheriv(ALGORITHM, sessionKey, Buffer.from(data.iv, 'hex'));
@@ -470,6 +542,7 @@ ipcMain.handle('export-note', async (event, { noteId, password }) => {
 });
 
 ipcMain.handle('import-note', async (event, password) => {
+    if (typeof password !== 'string') throw new Error('Invalid password');
     const { filePaths } = await dialog.showOpenDialog(mainWindow, {
         title: 'Import Note',
         properties: ['openFile'],

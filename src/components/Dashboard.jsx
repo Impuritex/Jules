@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FaPlus, FaTrash, FaSignOutAlt, FaLock, FaCog, FaImage, FaTimes, FaFileExport, FaSync } from 'react-icons/fa';
+import { FaPlus, FaTrash, FaSignOutAlt, FaLock, FaCog, FaImage, FaTimes, FaFileExport, FaSync, FaKey } from 'react-icons/fa';
 
 const AutoTextarea = ({ value, onChange, onKeyDown, placeholder, autoFocus, id, setRef }) => {
   const textareaRef = useRef(null);
@@ -53,6 +53,10 @@ const Dashboard = ({ onLogout }) => {
   const [validityDuration, setValidityDuration] = useState(''); // Hours
   const [accessTimerLimit, setAccessTimerLimit] = useState(15);
 
+  // Password Change Modal
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [changePassData, setChangePassData] = useState({ old: '', new: '', confirm: '' });
+
   // Unlock State
   const [unlockNoteId, setUnlockNoteId] = useState(null);
   const [unlockPassword, setUnlockPassword] = useState('');
@@ -64,6 +68,24 @@ const Dashboard = ({ onLogout }) => {
 
   useEffect(() => {
     loadNotes();
+
+    // Memory Cleansing & Refresh
+    const handleBlur = () => {
+        setNotes([]);
+        setSelectedNoteId(null);
+        setUnlockedNotes(new Set()); // Lock all notes
+    };
+    const handleFocus = () => {
+        loadNotes();
+    };
+
+    const cleanBlur = window.electron.onBlur(handleBlur);
+    const cleanFocus = window.electron.onFocus(handleFocus);
+
+    return () => {
+        if (cleanBlur) cleanBlur();
+        if (cleanFocus) cleanFocus();
+    };
   }, []);
 
   useEffect(() => {
@@ -200,7 +222,6 @@ const Dashboard = ({ onLogout }) => {
              const currentBlock = selectedNote.content[index];
              const prevBlock = selectedNote.content[index - 1];
 
-             // Only merge if previous block is text
              if (prevBlock.type === 'text') {
                  e.preventDefault();
                  const prevLength = prevBlock.data.length;
@@ -224,9 +245,6 @@ const Dashboard = ({ onLogout }) => {
                  const el = blockRefs.current.get(prevBlock.id);
                  if (el) {
                      el.focus();
-                     // Maintain relative cursor position or go to end?
-                     // Standard is usually last line, but difficult to calculate line wrapping in textarea.
-                     // Going to end of previous block is a reasonable approximation for "up from start".
                      const len = el.value.length;
                      el.setSelectionRange(len, len);
                  }
@@ -253,7 +271,12 @@ const Dashboard = ({ onLogout }) => {
                   const reader = new FileReader();
                   reader.onload = (e) => {
                       const base64 = e.target.result;
-                      addBlock('image', base64);
+                      // Sanitize: ensure it starts with data:image
+                      if (base64.startsWith('data:image')) {
+                          addBlock('image', base64);
+                      } else {
+                          alert('Invalid image format');
+                      }
                   };
                   reader.readAsDataURL(blob);
                   return;
@@ -396,6 +419,27 @@ const Dashboard = ({ onLogout }) => {
      }
   };
 
+  const handleChangePasswordSubmit = async (e) => {
+      e.preventDefault();
+      if (changePassData.new !== changePassData.confirm) {
+          alert('New passwords do not match');
+          return;
+      }
+      if (changePassData.new.length < 1) {
+          alert('Password cannot be empty');
+          return;
+      }
+
+      const result = await window.electron.changePassword(changePassData.old, changePassData.new);
+      if (result.success) {
+          alert('Password changed successfully');
+          setIsPasswordModalOpen(false);
+          setChangePassData({ old: '', new: '', confirm: '' });
+      } else {
+          alert('Failed: ' + result.error);
+      }
+  };
+
   useEffect(() => {
     const timer = setTimeout(() => {
         if (notes.length > 0) {
@@ -407,7 +451,6 @@ const Dashboard = ({ onLogout }) => {
 
   const selectedNote = notes.find(n => n.id === selectedNoteId);
 
-  // Expiration calculation for UI
   let expirationText = null;
   if (selectedNote && selectedNote.security?.validityDuration && selectedNote.security.lastRefreshedAt) {
       const expiresAt = selectedNote.security.lastRefreshedAt + (selectedNote.security.validityDuration * 60 * 60 * 1000);
@@ -457,7 +500,14 @@ const Dashboard = ({ onLogout }) => {
           ))}
         </div>
 
-        <div className="p-4 border-t border-white/10">
+        <div className="p-4 border-t border-white/10 space-y-2">
+           <button
+             onClick={() => setIsPasswordModalOpen(true)}
+             className="w-full flex items-center justify-center space-x-2 py-2 bg-white/5 hover:bg-white/10 rounded text-sm transition-colors border border-white/5 backdrop-blur-sm"
+           >
+             <FaKey />
+             <span>Change Password</span>
+           </button>
            <button
              onClick={onLogout}
              className="w-full flex items-center justify-center space-x-2 py-2 bg-white/5 hover:bg-white/10 rounded text-sm transition-colors border border-white/5 backdrop-blur-sm"
@@ -578,7 +628,7 @@ const Dashboard = ({ onLogout }) => {
         )}
       </div>
 
-      {/* Security Modal - Glassmorphism */}
+      {/* Security Modal */}
       <AnimatePresence>
           {isSettingsOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
@@ -588,7 +638,7 @@ const Dashboard = ({ onLogout }) => {
                     exit={{ scale: 0.9, opacity: 0 }}
                     className="bg-black/50 backdrop-blur-xl p-8 rounded-2xl border border-white/10 w-96 shadow-2xl relative overflow-hidden"
                   >
-                      {/* Decorative gradient blob */}
+                      {/* Note Settings Logic... */}
                       <div className="absolute -top-10 -right-10 w-32 h-32 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
 
                       <h3 className="text-xl font-bold mb-6 flex items-center text-white relative z-10"><FaLock className="mr-3 text-indigo-400"/> Security Protocols</h3>
@@ -654,6 +704,67 @@ const Dashboard = ({ onLogout }) => {
                             className="px-6 py-2 bg-indigo-600/90 hover:bg-indigo-700/90 rounded-lg text-white font-bold text-sm shadow-lg shadow-indigo-500/20 backdrop-blur-sm transition-all"
                           >
                               Engage
+                          </button>
+                      </div>
+                  </motion.div>
+              </div>
+          )}
+      </AnimatePresence>
+
+      {/* Password Change Modal */}
+      <AnimatePresence>
+          {isPasswordModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    className="bg-black/50 backdrop-blur-xl p-8 rounded-2xl border border-white/10 w-96 shadow-2xl relative overflow-hidden"
+                  >
+                      <h3 className="text-xl font-bold mb-6 flex items-center text-white relative z-10"><FaKey className="mr-3 text-indigo-400"/> Change Password</h3>
+
+                      <div className="space-y-4 relative z-10">
+                          <div>
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Old Password</label>
+                              <input
+                                type="password"
+                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50 transition-colors"
+                                value={changePassData.old}
+                                onChange={(e) => setChangePassData({...changePassData, old: e.target.value})}
+                              />
+                          </div>
+                          <div>
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">New Password</label>
+                              <input
+                                type="password"
+                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50 transition-colors"
+                                value={changePassData.new}
+                                onChange={(e) => setChangePassData({...changePassData, new: e.target.value})}
+                              />
+                          </div>
+                          <div>
+                              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Confirm New Password</label>
+                              <input
+                                type="password"
+                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500/50 transition-colors"
+                                value={changePassData.confirm}
+                                onChange={(e) => setChangePassData({...changePassData, confirm: e.target.value})}
+                              />
+                          </div>
+                      </div>
+
+                      <div className="mt-8 flex justify-end space-x-3 relative z-10">
+                          <button
+                            onClick={() => setIsPasswordModalOpen(false)}
+                            className="px-4 py-2 rounded-lg text-gray-400 hover:text-white transition-colors text-sm"
+                          >
+                              Cancel
+                          </button>
+                          <button
+                            onClick={handleChangePasswordSubmit}
+                            className="px-6 py-2 bg-indigo-600/90 hover:bg-indigo-700/90 rounded-lg text-white font-bold text-sm shadow-lg shadow-indigo-500/20 backdrop-blur-sm transition-all"
+                          >
+                              Update
                           </button>
                       </div>
                   </motion.div>

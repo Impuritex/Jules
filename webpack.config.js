@@ -10,6 +10,7 @@ module.exports = {
   devServer: {
     port: 8080
   },
+  devtool: false, // Disable source maps
   module: {
     rules: [
       {

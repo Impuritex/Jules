@@ -9,6 +9,7 @@ const App = () => {
   const [hasAccount, setHasAccount] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
+  const [numLockPresses, setNumLockPresses] = useState([]);
 
   useEffect(() => {
     const checkAccount = async () => {
@@ -30,6 +31,37 @@ const App = () => {
         alert('Data wiped due to security breach.');
         window.location.reload();
     });
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'NumLock') {
+        const now = Date.now();
+        setNumLockPresses(prev => {
+          const last = prev[prev.length - 1];
+          if (!last) return [now];
+
+          const diff = now - last;
+          // 3 seconds interval logic: 2.5s to 3.5s
+          if (diff >= 2500 && diff <= 3500) {
+            const newPresses = [...prev, now];
+            if (newPresses.length >= 3) {
+              setTimeout(() => {
+                  if (window.confirm('WIPE ALERT! Are you sure you want to wipe everything?')) {
+                    window.electron.wipeData();
+                  }
+              }, 100);
+              return [];
+            }
+            return newPresses;
+          } else {
+             return [now];
+          }
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+
   }, []);
 
   if (isLoading) {
