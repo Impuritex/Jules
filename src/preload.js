@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('electron', {
   importNote: (password) => ipcRenderer.invoke('import-note', password),
   changePassword: (oldPassword, newPassword) => ipcRenderer.invoke('change-password', oldPassword, newPassword),
 
+  checkNumLockRhythm: () => ipcRenderer.invoke('check-numlock-rhythm'),
+  resetNumLockRhythm: () => ipcRenderer.invoke('reset-numlock-rhythm'),
+
   onWiped: (callback) => {
       const subscription = (event, ...args) => callback(...args);
       ipcRenderer.on('wiped', subscription);

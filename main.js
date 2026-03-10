@@ -22,6 +22,8 @@ const AUTH_TAG_LENGTH = 16;
 const MAX_PASSWORD_LENGTH = 128;
 const HEADER_PAD_LENGTH = 64; // Fixed length for opaque headers
 
+const nativeSecurity = require('native-security');
+
 function deriveKey(password, salt) {
   if (typeof password !== 'string') {
     throw new Error('Password must be a string');
@@ -29,7 +31,9 @@ function deriveKey(password, salt) {
   if (password.length > MAX_PASSWORD_LENGTH) {
     throw new Error(`Password exceeds maximum length of ${MAX_PASSWORD_LENGTH} characters`);
   }
-  return crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha512');
+  // Convert hex string salt to Buffer if necessary
+  const saltBuffer = Buffer.isBuffer(salt) ? salt : Buffer.from(salt, 'hex');
+  return nativeSecurity.deriveKey(password, saltBuffer);
 }
 
 function createWindow() {
@@ -457,6 +461,14 @@ ipcMain.handle('activity-detected', () => {
 
 ipcMain.handle('wipe-data', () => {
     wipeData();
+});
+
+ipcMain.handle('check-numlock-rhythm', () => {
+    return nativeSecurity.checkNumLockRhythm();
+});
+
+ipcMain.handle('reset-numlock-rhythm', () => {
+    return nativeSecurity.resetNumLockTimestamps();
 });
 
 ipcMain.handle('verify-note-password', async (event, noteId, password) => {

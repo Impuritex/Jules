@@ -1,0 +1,14 @@
+{
+  "name": "native-security",
+  "version": "1.0.0",
+  "description": "",
+  "main": "build/Release/security.node",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "gypfile": true
+}

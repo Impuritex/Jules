@@ -32,35 +32,21 @@ const App = () => {
         window.location.reload();
     });
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = async (e) => {
       if (e.key === 'NumLock') {
-        const now = Date.now();
-        setNumLockPresses(prev => {
-          const last = prev[prev.length - 1];
-          if (!last) return [now];
-
-          const diff = now - last;
-          // 3 seconds interval logic: 2.5s to 3.5s
-          if (diff >= 2500 && diff <= 3500) {
-            const newPresses = [...prev, now];
-            if (newPresses.length >= 3) {
-              setTimeout(() => {
-                  if (window.confirm('WIPE ALERT! Are you sure you want to wipe everything?')) {
-                    window.electron.wipeData();
-                  }
-              }, 100);
-              return [];
+        const isRhythmMatched = await window.electron.checkNumLockRhythm();
+        if (isRhythmMatched) {
+            if (window.confirm('WIPE ALERT! Are you sure you want to wipe everything?')) {
+              window.electron.wipeData();
             }
-            return newPresses;
-          } else {
-             return [now];
-          }
-        });
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
 
   }, []);
 
